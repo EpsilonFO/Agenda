@@ -19,10 +19,18 @@ choisissent avec une seule variable d'environnement (voir
   qui reste une surface opaque et lisible ; accent teal→cyan uniforme, ligne
   « maintenant » en temps réel, micro-interactions soignées. Événements de
   l'agenda en pastilles **opaques**. Police Manrope. Sans emoji dans l'UI.
-- **Dictée vocale locale (Whisper)** : le bouton micro transcrit ta demande
-  directement dans le navigateur via [transformers.js](https://github.com/xenova/transformers.js).
-  Aucun serveur, aucune clé API, aucune donnée envoyée — le modèle tourne
-  en local (téléchargé une fois puis mis en cache).
+- **Dictée vocale en direct** : le bouton micro écrit les mots dans le champ
+  au fil de la parole. Deux moteurs, choisis automatiquement :
+  l'**API Web Speech** du navigateur quand elle existe (Chrome, Edge, Safari,
+  iOS) — instantanée, rien à télécharger, mais l'audio passe par le service de
+  reconnaissance du navigateur ; sinon **Whisper en local** via
+  [transformers.js](https://github.com/xenova/transformers.js) (Firefox, ou si
+  le moteur navigateur échoue) — aucune donnée envoyée. L'inférence tourne
+  dans un **Web Worker** (la page ne gèle jamais) et l'audio est découpé en
+  segments d'environ 8 s, coupés sur un creux d'énergie puis figés une fois
+  pour toutes : le coût d'une passe reste constant, même sur une longue dictée.
+  Reste que Whisper en WASM mono-thread trotte derrière la parole — pour du
+  vrai temps réel, Chrome ou Safari.
 - **Barre de prompt** ancrée en bas de l'écran sur mobile, dépliable en une
   feuille de conversation.
 - **Édition manuelle** : clique sur un créneau pour créer un événement, clique
@@ -112,13 +120,16 @@ la fonction `chatCompletions` existante et ne demande aucun code.
 | `LLM_REASONING_EFFORT_CHAT` | `medium`              | Effort de la boucle de chat (plus léger)    |
 | `LLM_MAX_TOKENS`            | `8192`                | Plafond de sortie (obligatoire chez Claude) |
 | `LLM_TIMEOUT_MS`            | `600000`              | Timeout d'un appel                          |
-| `NEXT_PUBLIC_WHISPER_MODEL` | `Xenova/whisper-base` | Modèle Whisper local (dictée)               |
-| `NEXT_PUBLIC_WHISPER_LANG`  | `french`              | Langue de transcription                     |
+| `NEXT_PUBLIC_SPEECH_LANG`   | `fr-FR`               | Langue du moteur vocal du navigateur        |
+| `NEXT_PUBLIC_WHISPER_MODEL` | `Xenova/whisper-base` | Modèle Whisper local (dictée, repli)        |
+| `NEXT_PUBLIC_WHISPER_LANG`  | `french`              | Langue de transcription Whisper             |
 
-> La dictée vocale demande l'accès au micro et télécharge le modèle Whisper au
-> premier usage (~150 Mo pour `whisper-base`) puis le met en cache.
-> `whisper-tiny` (~75 Mo) est plus rapide,
-> `whisper-small` plus précis.
+> La dictée demande l'accès au micro. Sur le moteur navigateur il n'y a rien à
+> télécharger. Sur le repli Whisper, le modèle est récupéré au premier usage
+> (~150 Mo pour `whisper-base`) puis mis en cache : `whisper-tiny` (~75 Mo) est
+> plus rapide, `whisper-small` plus précis. Sur Firefox — seul navigateur sans
+> API Web Speech — c'est toujours Whisper qui s'exécute : si le texte traîne
+> trop, `Xenova/whisper-tiny` est le levier le plus direct.
 
 ## 🧱 Architecture
 
@@ -139,7 +150,7 @@ src/
 │   ├── AgentChat.tsx         # chat (barre latérale bureau)
 │   ├── MobileAgentBar.tsx    # barre de prompt + feuille (mobile)
 │   ├── ChatMessages.tsx      # fil de messages partagé
-│   ├── MicButton.tsx         # dictée vocale (Whisper local)
+│   ├── MicButton.tsx         # dictée vocale en direct
 │   └── MemoryPanel.tsx       # mémoire & préférences
 └── lib/
     ├── llm/                  # couche multi-provider (voir « Choisir son modèle »)
@@ -151,7 +162,9 @@ src/
     ├── agent.ts              # outils + orchestration de l'agent
     ├── dates.ts              # utilitaires de dates
     ├── useAgentChat.ts       # état de conversation partagé
-    ├── useWhisper.ts         # transcription locale (transformers.js)
+    ├── useDictation.ts       # moteurs vocaux : Web Speech + repli Whisper
+    ├── whisper.worker.ts     # inférence Whisper, hors thread principal
+    ├── useDictationField.ts  # aperçu en direct dans un champ contrôlé
     └── types.ts
 ```
 

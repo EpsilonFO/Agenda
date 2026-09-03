@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import ChatMessages from "@/components/ChatMessages";
 import MicButton from "@/components/MicButton";
+import { useDictationField } from "@/lib/useDictationField";
 import ChatModeSwitcher, { chatModeInfo } from "@/components/ChatModeSwitcher";
 import SessionDrawer from "@/components/SessionDrawer";
 import type { AgentChat } from "@/lib/useAgentChat";
@@ -28,6 +29,7 @@ export default function ChatSheet({
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [micError, setMicError] = useState<string | null>(null);
+  const mic = useDictationField(chat.setInput);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const info = header ?? chatModeInfo(chat.mode);
 
@@ -45,8 +47,11 @@ export default function ChatSheet({
   if (!open) return null;
 
   function submit() {
-    if (!chat.input.trim()) return;
-    chat.send();
+    // On envoie ce qui est affiché : le provisoire encore en cours de dictée
+    // en fait partie.
+    const text = mic.flush(chat.input).trim();
+    if (!text) return;
+    chat.send(text);
   }
 
   return (
@@ -141,13 +146,14 @@ export default function ChatSheet({
           )}
           <div className="flex items-end gap-2">
             <MicButton
-              onText={(t) => chat.setInput((prev) => (prev ? `${prev} ${t}` : t))}
+              onText={mic.onText}
+              onInterim={mic.onInterim}
               onError={setMicError}
             />
             <textarea
               ref={inputRef}
-              value={chat.input}
-              onChange={(e) => chat.setInput(e.target.value)}
+              value={mic.preview(chat.input)}
+              onChange={(e) => mic.onChange(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -160,7 +166,7 @@ export default function ChatSheet({
             />
             <button
               onClick={submit}
-              disabled={chat.loading || !chat.input.trim()}
+              disabled={chat.loading || !mic.preview(chat.input).trim()}
               className="btn-primary h-10 w-11 px-0 text-base"
               aria-label="Envoyer"
             >

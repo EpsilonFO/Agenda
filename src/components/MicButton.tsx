@@ -1,21 +1,25 @@
 "use client";
 
 import { useEffect } from "react";
-import { useWhisper } from "@/lib/useWhisper";
+import { useDictation } from "@/lib/useDictation";
 
 /**
- * Bouton micro : dictée vocale locale (Whisper).
- * Insère le texte transcrit via `onText`. Affiche l'état
- * (enregistrement, chargement du modèle, transcription).
+ * Bouton micro : dictée vocale en direct.
+ * `onInterim` reçoit le texte encore provisoire (aperçu au fil de la parole),
+ * `onText` les segments définitifs. Voir `useDictationField` pour le branchement
+ * sur un champ contrôlé.
  */
 export default function MicButton({
   onText,
+  onInterim,
   onError,
 }: {
   onText: (text: string) => void;
+  onInterim?: (text: string) => void;
   onError?: (message: string | null) => void;
 }) {
-  const { status, progress, error, supported, toggle } = useWhisper(onText);
+  const { status, progress, error, supported, engine, modelReady, toggle } =
+    useDictation(onText, onInterim);
 
   // Remonte les erreurs éventuelles au parent (barre d'info).
   useEffect(() => {
@@ -26,15 +30,21 @@ export default function MicButton({
 
   const busy = status === "loading" || status === "transcribing";
   const recording = status === "recording";
+  // Sur le repli Whisper, le modèle se charge pendant qu'on parle : sans ce
+  // compteur, les premières secondes passent pour une panne.
+  const warming = recording && engine === "whisper" && !modelReady;
 
-  const title =
-    status === "recording"
-      ? "Arrêter et transcrire"
+  const title = warming
+    ? `Dictée en cours — chargement du modèle vocal… ${progress || 0}%`
+    : status === "recording"
+      ? "Arrêter la dictée"
       : status === "loading"
       ? `Chargement du modèle vocal… ${progress || 0}%`
       : status === "transcribing"
-      ? "Transcription en cours…"
-      : "Dicter (Whisper local)";
+        ? "Transcription en cours…"
+        : engine === "speech"
+          ? "Dicter (temps réel)"
+          : "Dicter (Whisper local)";
 
   return (
     <button
@@ -53,6 +63,11 @@ export default function MicButton({
     >
       {busy ? (
         <span className="h-4 w-4 animate-spin-soft rounded-full border-2 border-brand/30 border-t-brand" />
+      ) : warming ? (
+        // Le modèle arrive : on montre l'avancement plutôt qu'un carré muet.
+        <span className="text-[9px] font-semibold tabular-nums text-brand-ink">
+          {progress || 0}%
+        </span>
       ) : recording ? (
         // Carré "stop"
         <span className="h-3 w-3 rounded-[3px] bg-brand-ink" />

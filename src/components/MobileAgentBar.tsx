@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import MicButton from "@/components/MicButton";
+import { useDictationField } from "@/lib/useDictationField";
 import ChatSheet from "@/components/ChatSheet";
 import { AgentChat as AgentChatState } from "@/lib/useAgentChat";
 
@@ -14,15 +15,16 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
   const [open, setOpen] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
   const barInputRef = useRef<HTMLTextAreaElement>(null);
+  const mic = useDictationField(chat.setInput);
 
   function submit() {
-    if (!chat.input.trim()) return;
-    chat.send();
+    // On envoie ce qui est affiché : le provisoire encore en cours de dictée
+    // en fait partie.
+    const text = mic.flush(chat.input).trim();
+    if (!text) return;
+    chat.send(text);
     setOpen(true);
   }
-
-  const dictate = (t: string) =>
-    chat.setInput((prev) => (prev ? `${prev} ${t}` : t));
 
   return (
     <>
@@ -50,11 +52,15 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
           </p>
         )}
         <div className="flex items-end gap-2">
-          <MicButton onText={dictate} onError={setMicError} />
+          <MicButton
+            onText={mic.onText}
+            onInterim={mic.onInterim}
+            onError={setMicError}
+          />
           <textarea
             ref={barInputRef}
-            value={chat.input}
-            onChange={(e) => chat.setInput(e.target.value)}
+            value={mic.preview(chat.input)}
+            onChange={(e) => mic.onChange(e.target.value)}
             onFocus={() => setOpen(true)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -68,7 +74,7 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
           />
           <button
             onClick={submit}
-            disabled={chat.loading || !chat.input.trim()}
+            disabled={chat.loading || !mic.preview(chat.input).trim()}
             className="btn-primary h-10 w-11 px-0 text-base"
             aria-label="Envoyer"
           >

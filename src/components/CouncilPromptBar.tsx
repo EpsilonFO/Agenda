@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useCallback } from "react";
 import MicButton from "@/components/MicButton";
+import { useDictationField } from "@/lib/useDictationField";
 import { AgentChat as AgentChatState } from "@/lib/useAgentChat";
 import type { ChatMode } from "@/lib/agents";
 
@@ -18,6 +19,7 @@ interface Props {
  */
 export default function CouncilPromptBar({ chat, open, onClose }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mic = useDictationField(chat.setInput);
   // Mode à rétablir si la séance est abandonnée sans être lancée.
   const fallbackModeRef = useRef<ChatMode>("josiane");
 
@@ -50,8 +52,11 @@ export default function CouncilPromptBar({ chat, open, onClose }: Props) {
 
   /** Lancement : on reste en mode conseil pour voir le plan arriver. */
   function submit() {
-    if (!chat.input.trim()) return;
-    chat.send();
+    // On envoie ce qui est affiché : le provisoire encore en cours de dictée
+    // en fait partie.
+    const text = mic.flush(chat.input).trim();
+    if (!text) return;
+    chat.send(text);
     onClose();
   }
 
@@ -101,13 +106,14 @@ export default function CouncilPromptBar({ chat, open, onClose }: Props) {
         {/* Grande barre de prompt */}
         <div className="glass-strong flex items-end gap-3 rounded-4xl p-3 pl-4">
           <MicButton
-            onText={(t) => chat.setInput((prev) => (prev ? `${prev} ${t}` : t))}
+            onText={mic.onText}
+            onInterim={mic.onInterim}
             onError={() => {}}
           />
           <textarea
             ref={textareaRef}
-            value={chat.input}
-            onChange={(e) => chat.setInput(e.target.value)}
+            value={mic.preview(chat.input)}
+            onChange={(e) => mic.onChange(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -120,7 +126,7 @@ export default function CouncilPromptBar({ chat, open, onClose }: Props) {
           />
           <button
             onClick={submit}
-            disabled={chat.loading || !chat.input.trim()}
+            disabled={chat.loading || !mic.preview(chat.input).trim()}
             className="btn-primary h-12 w-12 shrink-0 rounded-2xl px-0 text-xl"
             aria-label="Lancer le conseil"
           >

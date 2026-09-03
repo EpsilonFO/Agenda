@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import ChatMessages from "@/components/ChatMessages";
 import MicButton from "@/components/MicButton";
+import { useDictationField } from "@/lib/useDictationField";
 import ChatModeSwitcher, { chatModeInfo } from "@/components/ChatModeSwitcher";
 import { AgentChat as AgentChatState } from "@/lib/useAgentChat";
 import SessionDrawer from "@/components/SessionDrawer";
@@ -10,9 +11,18 @@ import SessionDrawer from "@/components/SessionDrawer";
 /** Panneau de conversation (vue bureau, dans la barre latérale). */
 export default function AgentChat({ chat }: { chat: AgentChatState }) {
   const [micError, setMicError] = useState<string | null>(null);
+  const mic = useDictationField(chat.setInput);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const headerRef = useRef<HTMLDivElement>(null);
   const info = chatModeInfo(chat.mode);
+
+  function submit() {
+    // On envoie ce qui est affiché : le provisoire encore en cours de dictée
+    // en fait partie.
+    const text = mic.flush(chat.input).trim();
+    if (!text) return;
+    chat.send(text);
+  }
 
   return (
     <div className="panel flex h-full flex-col overflow-hidden">
@@ -76,18 +86,17 @@ export default function AgentChat({ chat }: { chat: AgentChatState }) {
         )}
         <div className="flex items-end gap-2">
           <MicButton
-            onText={(t) =>
-              chat.setInput((prev) => (prev ? `${prev} ${t}` : t))
-            }
+            onText={mic.onText}
+            onInterim={mic.onInterim}
             onError={setMicError}
           />
           <textarea
-            value={chat.input}
-            onChange={(e) => chat.setInput(e.target.value)}
+            value={mic.preview(chat.input)}
+            onChange={(e) => mic.onChange(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                chat.send();
+                submit();
               }
             }}
             rows={1}
@@ -95,8 +104,8 @@ export default function AgentChat({ chat }: { chat: AgentChatState }) {
             className="field max-h-32 flex-1 resize-none"
           />
           <button
-            onClick={() => chat.send()}
-            disabled={chat.loading || !chat.input.trim()}
+            onClick={submit}
+            disabled={chat.loading || !mic.preview(chat.input).trim()}
             className="btn-primary h-10 w-11 px-0 text-base"
             aria-label="Envoyer"
           >
