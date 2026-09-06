@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import MicButton from "@/components/MicButton";
 import { useDictationField } from "@/lib/useDictationField";
+import { useAutoGrow } from "@/lib/useAutoGrow";
 import ChatSheet from "@/components/ChatSheet";
 import { AgentChat as AgentChatState } from "@/lib/useAgentChat";
 
@@ -16,6 +17,7 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
   const [micError, setMicError] = useState<string | null>(null);
   const barInputRef = useRef<HTMLTextAreaElement>(null);
   const mic = useDictationField(chat.setInput);
+  useAutoGrow(barInputRef, mic.preview(chat.input));
 
   function submit() {
     // On envoie ce qui est affiché : le provisoire encore en cours de dictée
@@ -70,7 +72,7 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
             }}
             rows={1}
             placeholder="Demander à l'agenda…"
-            className="field max-h-32 flex-1 resize-none"
+            className="field max-h-32 flex-1 resize-none overflow-y-auto"
           />
           <button
             onClick={submit}

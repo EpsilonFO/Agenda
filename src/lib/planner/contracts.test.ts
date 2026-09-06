@@ -142,4 +142,13 @@ describe("v5.1 : décisions, zone, plafond Monumia, patch de replanification", (
     expect(base.decisions.sport[0].date).toBe("2026-07-22");
     expect(base.imprevus).toHaveLength(1);
   });
+
+  it("applyReplanPatch : un patch VIDE est l'identité — le plan re-résolu sera identique", () => {
+    const base = WeekInputSchema.parse({
+      weekStart: "2026-07-20",
+      engagements: [{ label: "Inscription SUAPS", day: "2026-07-22", start: "13:00", durationMin: 15 }],
+    });
+    const next = applyReplanPatch(base, ReplanPatchSchema.parse({}));
+    expect(next).toEqual(base);
+  });
 });

@@ -9,7 +9,7 @@
  * Objectif : garder un contexte utile sans envoyer 100 messages à l'API.
  */
 
-import { MODELS, llmChat } from "./llm";
+import { chatEffort, llmChat, textOf } from "./llm";
 import {
   getChatHistory,
   setChatHistory,
@@ -69,7 +69,7 @@ export async function maybeSummarize(mode: string, sessionId?: string): Promise<
 
   try {
     const msg = await llmChat({
-      model: MODELS.small,
+      role: "small",
       messages: [
         {
           role: "system",
@@ -82,10 +82,11 @@ export async function maybeSummarize(mode: string, sessionId?: string): Promise<
         },
       ],
       label: "résumé",
+      // Résumer dix lignes ne mérite pas de réflexion : même effort que le chat.
+      effort: chatEffort(),
     });
 
-    const summaryText =
-      typeof msg.content === "string" ? msg.content.trim() : "";
+    const summaryText = textOf(msg).trim();
     if (!summaryText) return;
 
     const summaryEntry: ChatHistoryEntry = {
@@ -101,6 +102,22 @@ export async function maybeSummarize(mode: string, sessionId?: string): Promise<
     // Résumé non critique — on continue sans planter
     console.warn("[summary] échec résumé automatique :", err);
   }
+}
+
+/**
+ * Titre PROVISOIRE, immédiat : le début du premier message.
+ *
+ * Il existe pour que la création d'une session ne coûte pas un aller-retour LLM
+ * devant la réponse de l'agent — 3 secondes de silence pour un libellé de liste.
+ * Le titre soigné le remplace quand il arrive (voir generateSessionTitle).
+ */
+export function provisionalTitle(firstMessage: string): string {
+  const clean = firstMessage.replace(/\s+/g, " ").trim();
+  if (!clean) return "Nouvelle conversation";
+  if (clean.length <= 40) return clean;
+  const cut = clean.slice(0, 40);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 20 ? cut.slice(0, space) : cut}…`;
 }
 
 /**
@@ -123,7 +140,7 @@ export async function generateSessionTitle(
 
   try {
     const msg = await llmChat({
-      model: MODELS.small,
+      role: "small",
       messages: [
         {
           role: "system",
@@ -138,12 +155,10 @@ Génère un titre court.`,
         },
       ],
       label: "titre-session",
+      effort: chatEffort(),
     });
 
-    const title =
-      typeof msg.content === "string"
-        ? msg.content.trim().replace(/^["']|["']$/g, "").slice(0, 60)
-        : "";
+    const title = textOf(msg).trim().replace(/^["']|["']$/g, "").slice(0, 60);
     return title || "Nouvelle conversation";
   } catch {
     return "Nouvelle conversation";

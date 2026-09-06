@@ -193,23 +193,35 @@ function PlanCard({
 
       {days.length === 0 && (
         <p className="text-xs italic text-ink-faint">
-          Aucune séance proposée — précise tes contraintes ?
+          {committed
+            ? "Semaine vidée — il ne reste aucune séance du plan."
+            : "Aucune séance proposée — précise tes contraintes ?"}
         </p>
       )}
 
-      {/* Planning */}
-      {days.map(([day, sessions]) => (
-        <div key={day}>
-          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-soft">
-            {formatFullDate(parseIso(`${day}T12:00:00`))}
-          </p>
-          <ul className="space-y-1">
-            {sessions.map((s, i) => (
-              <SessionItem key={i} session={s} workout={workoutByStart.get(s.start)} />
+      {/* Planning : replié par défaut — la semaine se lit dans le calendrier,
+          pas dans le fil de chat. Le détail reste à un clic. */}
+      {days.length > 0 && (
+        <details className="rounded-xl border border-line bg-white/[0.04]">
+          <summary className="cursor-pointer list-none px-2.5 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-soft">
+            {plan.sessions.length} séance{plan.sessions.length > 1 ? "s" : ""} sur {days.length} jour{days.length > 1 ? "s" : ""} — voir le détail
+          </summary>
+          <div className="space-y-3 px-2.5 pb-2.5">
+            {days.map(([day, sessions]) => (
+              <div key={day}>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-soft">
+                  {formatFullDate(parseIso(`${day}T12:00:00`))}
+                </p>
+                <ul className="space-y-1">
+                  {sessions.map((s, i) => (
+                    <SessionItem key={i} session={s} workout={workoutByStart.get(s.start)} />
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
-        </div>
-      ))}
+          </div>
+        </details>
+      )}
 
       {plan.coachNote && (
         <p className="rounded-xl bg-brand/10 px-2.5 py-1.5 text-[11px] text-ink-soft">
@@ -219,6 +231,18 @@ function PlanCard({
 
       {plan.summary && (
         <p className="text-[11px] leading-relaxed text-ink-faint">{plan.summary}</p>
+      )}
+
+      {/* Règles enfreintes : ce ne sont pas des avertissements de plus. Sans
+          elles à l'écran, valider « quand même » se ferait à l'aveugle. */}
+      {plan.blockingErrors && plan.blockingErrors.length > 0 && (
+        <ul className="space-y-0.5 rounded-xl border border-red-500/30 bg-red-500/10 px-2.5 py-1.5">
+          {plan.blockingErrors.map((e, i) => (
+            <li key={i} className="text-[11px] text-red-400">
+              ✕ {e}
+            </li>
+          ))}
+        </ul>
       )}
 
       {plan.warnings && plan.warnings.length > 0 && (

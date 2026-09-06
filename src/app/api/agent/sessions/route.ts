@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { listSessions, createSession } from "@/lib/store";
-import { generateSessionTitle } from "@/lib/summary";
+import { provisionalTitle } from "@/lib/summary";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,11 @@ export async function GET(req: Request) {
 /**
  * POST /api/agent/sessions
  * Body: { mode, firstUserMessage }
- * Crée une nouvelle session et génère son titre via l'IA.
+ *
+ * Crée la session IMMÉDIATEMENT, avec un titre provisoire tiré du message. Le
+ * titre soigné est un appel LLM : il se demande ensuite en PATCH, en parallèle
+ * de l'agent. Le faire ici retardait la réponse de ~3 s pour un libellé que
+ * personne ne regarde à cet instant.
  */
 export async function POST(req: Request) {
   const body = await req.json();
@@ -26,7 +30,6 @@ export async function POST(req: Request) {
   }
   const firstMessage: string = body.firstUserMessage || "";
 
-  const title = await generateSessionTitle(firstMessage, mode);
-  const session = await createSession(mode, title);
+  const session = await createSession(mode, provisionalTitle(firstMessage));
   return NextResponse.json(session);
 }

@@ -582,6 +582,14 @@ export type SolveArgs = {
    *  config. Absent : plafond si maximize, sinon plancher + 2h. L'optimiseur
    *  en explore une grille et laisse le score trancher. */
   monumiaTargetHours?: number;
+  /**
+   * Plan PRÉCÉDENT (replanification). Tout ce qu'aucune décision n'impose y est
+   * repris de préférence : jours Delos, jour de chaque sport. Sans ça, une
+   * re-résolution tirait ces jours au RNG et « déplace Delos vendredi →
+   * mercredi » déplaçait aussi celui du jeudi (vécu). Le solveur reste
+   * déterministe : `previous` n'est qu'un ordre de préférence.
+   */
+  previous?: PlanSession[];
 };
 
 /** Résultat du solveur : un PlacementResult + les décisions LLM rejetées. */
@@ -639,6 +647,23 @@ export function solveWeek(
     return day;
   });
   const dayByDate = new Map(days.map((d) => [d.date, d]));
+
+  // Ce que le plan précédent avait posé — préférence, jamais contrainte.
+  const prevDelosDates = (remote: boolean): Set<string> =>
+    new Set(
+      (args.previous ?? [])
+        .filter((p) => p.category === "delos" && (p.placeId === cfg.work.delos.placeId) !== remote)
+        .map((p) => p.start.slice(0, 10))
+    );
+  const prevPresentielDates = prevDelosDates(false);
+  const prevRemoteDates = prevDelosDates(true);
+  const prevSportDates = new Map<string, Set<string>>();
+  for (const p of args.previous ?? []) {
+    if (p.category !== "sport" || !p.activityId) continue;
+    const set = prevSportDates.get(p.activityId) ?? new Set<string>();
+    set.add(p.start.slice(0, 10));
+    prevSportDates.set(p.activityId, set);
+  }
 
   // Normalisation de label (comparaison insensible aux accents/casse).
   const normLabel = (s: string) =>
@@ -734,8 +759,18 @@ export function solveWeek(
     //    en sortant, sur place). Sans ça, le déjeuner s'ancrait « avant
     //    l'après-midi » et laissait poireauter une heure. Après une séance de
     //    SPORT, le buffer douche reste dû avant de manger.
+    //    Un bloc qui COMMENCE après 12h30 n'est pas le bloc du matin : le
+    //    déjeuner se prend avant lui, pas collé derrière. Vécu : inscription
+    //    SUAPS 13h-13h15 → déjeuner 13h15-14h15, alors que 12h-13h était libre
+    //    en sortant du cours.
     const morningBlock = day.occ
-      .filter((o) => o.category !== "sortie" && o.end >= 11 * 60 + 30 && o.end <= 13 * 60 + 30)
+      .filter(
+        (o) =>
+          o.category !== "sortie" &&
+          o.start < 12 * 60 + 30 &&
+          o.end >= 11 * 60 + 30 &&
+          o.end <= 13 * 60 + 30
+      )
       .sort((a, b) => b.end - a.end)[0];
     if (morningBlock) {
       const s = morningBlock.end + (morningBlock.category === "sport" ? cfg.sport.bufferAfterMin : 0);
@@ -809,6 +844,37 @@ export function solveWeek(
     // Midi saturé (cours) : lunch-break signalera un warn.
   };
 
+  /** Lieu représentatif d'une zone (pour ancrer un bloc dont on ne connaît que
+   *  la zone : une sortie, un rendez-vous). */
+  const clusterPlaceId = (cluster?: string): string | undefined =>
+    cluster ? cfg.places.find((p) => p.cluster === cluster)?.id : undefined;
+
+  /* ------ 1 bis) Rendez-vous à heure FIXE (inscription, rdv, appel) ------- */
+
+  // Posés AVANT tout le reste, à l'heure dite, sans négociation : ce sont des
+  // obligations datées, pas des heures à caser. Ils occupent la journée, donc
+  // imprévus, sport, Delos et Monumia les contournent d'eux-mêmes. Les faire
+  // passer pour des imprévus (faute de champ) donnait un bloc d'1h30 posé un
+  // autre jour « pour garder de la marge » — l'inverse de ce qui est demandé.
+  for (const en of input.engagements) {
+    const day = dayByDate.get(en.day);
+    if (!day) {
+      notes.push(`Rendez-vous « ${en.label} » : le ${en.day} n'est pas dans la semaine — non posé.`);
+      continue;
+    }
+    if (en.zone && !cfg.clusters.some((c) => c.id === en.zone)) {
+      notes.push(`Rendez-vous « ${en.label} » : zone « ${en.zone} » inconnue de la config — ignorée.`);
+    }
+    const s = hhmm(en.start);
+    const fromDuration = s + (en.durationMin ?? 30);
+    const e = Math.min(en.end && hhmm(en.end) > s ? hhmm(en.end) : fromDuration, 24 * 60 - 1);
+    add(day, "autre", s, e, {
+      title: en.label,
+      placeId: clusterPlaceId(en.zone),
+      rationale: `Rendez-vous à heure fixe${en.note ? ` — ${en.note}` : ""}.`,
+    });
+  }
+
   /* --------- 2) Imprévus / TP — la PRIORITÉ, avant sport et Monumia ------- */
 
   // Un TP à rendre passe AVANT Monumia et le sport : on le pose en premier,
@@ -876,8 +942,6 @@ export function solveWeek(
   // qui précède). Pour « autre », on INFÈRE la zone depuis le libellé (« …à
   // Paris », « …à Orsay ») puis depuis les notes de la demande ; sans indice,
   // la sortie reste sans lieu (zone inconnue, aucun trajet forcé).
-  const clusterPlaceId = (cluster: string): string | undefined =>
-    cfg.places.find((p) => p.cluster === cluster)?.id;
   // Mots-clés de zone, construits depuis la config (noms de clusters ET de
   // lieux : « Paris », « Orsay / Saclay », « Bibliothèque (Orsay) »…). Un mot
   // générique partagé par tous les clusters (« maison »…) n'est retenu que s'il
@@ -1027,6 +1091,8 @@ export function solveWeek(
     // fixe compatible (validé par conflicts()), là où l'heuristique exigeait un
     // jour vierge.
     for (const d of decisions?.delos ?? []) {
+      // Un bloc à distance se décide plus bas (4 bis), pas ici.
+      if (d.modalite === "distance") continue;
       // Quota dépassé : on le DIT au lieu d'ignorer en silence — sinon la
       // demi-journée disparaît du plan sans que personne ne sache pourquoi.
       if (placed >= nHalf) {
@@ -1088,7 +1154,9 @@ export function solveWeek(
       return (
         (d.weekend ? 100 : 0) +
         (fixedSportWeekdays.has(WEEKDAYS[weekdayIdx(d.date)]) ? 10 : 0) +
-        (d.occ.length > 0 ? 1 : 0)
+        (d.occ.length > 0 ? 1 : 0) -
+        // Replanification : là où Delos était déjà, avant tout autre jour.
+        (prevPresentielDates.has(d.date) ? 20 : 0)
       );
     }
 
@@ -1226,9 +1294,12 @@ export function solveWeek(
     place: string | undefined,
     lo: number,
     hi: number,
-    rationale: string
+    rationale: string,
+    // true = creux de midi DEMANDÉ (décision « midi ») : vaut pour n'importe
+    // quelle activité, avec ou sans lieu — pas seulement la salle.
+    explicit = false
   ): boolean => {
-    if (act.morningOk || !place) return false;
+    if (!explicit && (act.morningOk || !place)) return false;
     if (d.occ.some((o) => o.category === "repas")) return false;
     const lastMorningEnd = Math.max(
       d.dayStart,
@@ -1267,6 +1338,11 @@ export function solveWeek(
       // …ou le creux de midi collé au dernier bloc du matin, déjeuner juste après.
       if (s === null && placeCreux(act, d, dur, place, lo, hi, "Séance (créneau demandé, creux de midi)."))
         return true;
+    } else if (moment === "midi") {
+      // « Avant de manger » : collée au dernier bloc du matin, déjeuner juste
+      // après. Pose transactionnelle (voir placeCreux) : sans repas possible
+      // derrière, la séance n'est pas posée et la décision est rejetée.
+      return placeCreux(act, d, dur, place, lo, hi, "Séance (créneau demandé, avant le déjeuner).", true);
     } else {
       s = findSportSlot(act, d, dur, place, Math.max(lo, 16 * 60 + 30), hi);
     }
@@ -1280,8 +1356,19 @@ export function solveWeek(
     const dur = act.durationMin;
     const place = act.placeIds[0]; // undefined pour la course
 
-    // Créneau imposé (ex: natation avec la fac) : jour + heure figés.
+    // Créneau imposé (ex: natation avec la fac) : jour + heure figés. Une
+    // décision dessus ne peut pas être honorée — on le DIT plutôt que de la
+    // laisser tomber en silence (vécu en test : « natation lundi midi » sans
+    // trace, ni séance ni refus).
     if (act.fixedSlot) {
+      const ignored = sportDecisionQueue.get(act.id)?.shift();
+      if (ignored) {
+        rejected.push({
+          kind: "sport",
+          ref: `${act.id}@${ignored.date}`,
+          reason: `${act.name} a un créneau imposé par la config (${act.fixedSlot.weekday} ${act.fixedSlot.start}) : il ne se déplace pas`,
+        });
+      }
       const target = days.find((d) => WEEKDAYS[weekdayIdx(d.date)] === act.fixedSlot!.weekday);
       if (target) {
         const s = hhmm(act.fixedSlot.start);
@@ -1341,8 +1428,12 @@ export function solveWeek(
         // Étalement : loin des séances de la même activité (récup) ET des
         // autres séances (pas deux sports le même jour si évitable).
         const spread = distTo(d, lastSame) + distTo(d, allSport);
+        // Replanification : le jour où cette séance était déjà passe devant
+        // tout autre critère hors week-end — on ne redistribue pas ce que
+        // l'utilisateur n'a pas demandé de bouger.
+        const kept = prevSportDates.get(act.id)?.has(d.date) ? -1e5 : 0;
         // On privilégie la semaine (week-end pénalisé pour keepLight).
-        return { d, key: sportCount * 1000 - spread + (d.weekend ? 1e6 : 0) };
+        return { d, key: sportCount * 1000 - spread + kept + (d.weekend ? 1e6 : 0) };
       })
       .sort((a, b) => a.key - b.key);
 
@@ -1350,17 +1441,19 @@ export function solveWeek(
     for (const { d } of scored) {
       const lo = Math.max(open, d.dayStart);
       const hi = Math.min(close, normalEnd);
-      // CREUX DE MIDI (≈ 10h30, ou collé au dernier bloc du matin) pour une
-      // activité à lieu « pas le matin » : l'après-midi reste libre pour un grand
-      // bloc de travail, le déjeuner suit la séance (voir placeCreux).
-      if (placeCreux(act, d, dur, place, lo, hi, "Séance de la semaine (creux de midi).")) {
-        done = true;
-        break;
-      }
       let s: number | null = null;
-      // Course/activités « matin ok » : le matin de préférence.
+      // Le sport se fait AVANT LE DÉJEUNER, par principe : le matin quand
+      // l'activité s'y prête, sinon au creux de midi, collé au dernier bloc du
+      // matin, le déjeuner juste après — l'après-midi reste un grand bloc de
+      // travail et on évite l'heure de pointe. Vécu : la natation tombait à
+      // 14h30 par défaut les jours de cours, alors que 12h15 en sortant du
+      // cours était exactement ce que voulait l'utilisateur.
       if (act.morningOk) {
         s = findSportSlot(act, d, dur, place, lo, Math.min(11 * 60 + 30, hi));
+      }
+      if (s === null && placeCreux(act, d, dur, place, lo, hi, "Séance de la semaine (creux de midi).", true)) {
+        done = true;
+        break;
       }
       if (s === null) {
         // Fin d'après-midi, AU PLUS TÔT : la séance se colle juste après le
@@ -1414,10 +1507,16 @@ export function solveWeek(
     // différents et le score tranche (un first-fit figé posait le bloc de 4h à
     // 18h-22h le lundi dans TOUS les candidats — vécu). Semaine avant week-end,
     // qui n'est candidat que si weekendOk (dernier recours).
+    // Replanification : les jours du plan précédent d'abord (à égalité de
+    // week-end) — on ne redistribue pas ce que personne n'a demandé de bouger.
     const weekdays = shuffled(
       days.filter((d) => !d.weekend || cfg.work.delos.weekendOk),
       rng
-    ).sort((a, b) => Number(a.weekend) - Number(b.weekend));
+    ).sort(
+      (a, b) =>
+        Number(a.weekend) - Number(b.weekend) ||
+        Number(!prevRemoteDates.has(a.date)) - Number(!prevRemoteDates.has(b.date))
+    );
 
     /** Ce découpage rentre-t-il en entier ? (simulation, sans rien poser) */
     const fits = (blockMin: number): boolean => {
@@ -1442,6 +1541,48 @@ export function solveWeek(
 
     let remoteDone = 0;
     const usedRemote = new Set<string>();
+
+    // Décisions « distance » d'abord (et TOUTES les décisions Delos quand la
+    // semaine n'a aucun présentiel : « Delos mercredi » n'a alors qu'un sens).
+    // Honorées si un bloc tient dans le gabarit demandé, rejetées avec raison
+    // sinon — jamais ignorées en silence.
+    const remoteWindow = (d: Day, gabarit: DelosDecision["gabarit"]): [number, number] =>
+      gabarit === "matin"
+        ? [d.dayStart, 13 * 60]
+        : gabarit === "apres-midi"
+          ? [13 * 60, normalEnd]
+          : [d.dayStart, normalEnd];
+    for (const dec of decisions?.delos ?? []) {
+      if (dec.modalite !== "distance" && nHalf > 0) continue;
+      if (remoteDone + blockMin > totalMin) {
+        rejected.push({ kind: "delos", ref: dec.date, reason: "volume Delos à distance déjà atteint" });
+        continue;
+      }
+      const d = dayByDate.get(dec.date);
+      if (!d) {
+        rejected.push({ kind: "delos", ref: dec.date, reason: "jour hors semaine" });
+        continue;
+      }
+      if (usedRemote.has(d.date) || delosDates.has(d.date)) continue;
+      const [lo, hi] = remoteWindow(d, dec.gabarit);
+      const s = findSlot(cfg, d, blockMin, remotePlace, "delos", lo, hi);
+      if (s === null) {
+        rejected.push({
+          kind: "delos",
+          ref: dec.date,
+          reason: `aucun créneau de ${blockMin / 60}h à distance ce jour-là (${dec.gabarit})`,
+        });
+        continue;
+      }
+      add(d, "delos", s, s + blockMin, {
+        title: "Delos (à distance)",
+        placeId: remotePlace,
+        rationale: `Heures Delos à distance (${blockMin / 60}h, jour demandé).`,
+      });
+      usedRemote.add(d.date);
+      remoteDone += blockMin;
+    }
+
     while (remoteDone + blockMin <= totalMin) {
       let posed = false;
       for (const d of weekdays) {
@@ -1679,6 +1820,7 @@ export function solveWeek(
   const violations = checkWeekPlan(cfg, out, fixed, {
     requestedSorties: input.sortiesDatees,
     imprevus: input.imprevus,
+    engagements: input.engagements,
   });
   emit(
     "violations",

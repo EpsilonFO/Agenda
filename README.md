@@ -58,7 +58,7 @@ npm install
 
 # 2. Choisir un fournisseur et renseigner sa clé
 cp .env.example .env.local
-# puis, dans .env.local : LLM_PROVIDER=openai + OPENAI_API_KEY=…
+# puis, dans .env.local : LLM_MODEL=gpt-terra + OPENAI_API_KEY=…
 
 # 3. Lancer en développement
 npm run dev
@@ -67,59 +67,63 @@ npm run dev
 Ouvre ensuite http://localhost:3000.
 
 > L'agenda fonctionne sans clé (création/édition manuelle), mais l'assistant IA
-> en a besoin. Le provider actif est affiché dans la console au démarrage.
+> en a besoin. Le modèle actif est affiché dans la console au démarrage, avec la
+> raison pour laquelle il a été retenu.
 
 ## 🔄 Choisir son modèle
 
-Une seule ligne de `.env.local` décide du fournisseur — le modèle par défaut,
-l'URL et le format d'API suivent :
+Les appels LLM passent par [**providall**](https://github.com/EpsilonFO/providall) :
+un registre de modèles, deux protocoles (Messages chez Anthropic,
+`/chat/completions` partout ailleurs), une seule API. Changer de fournisseur,
+c'est changer une ligne de `.env.local` :
 
 ```bash
-LLM_PROVIDER=claude      # puis ANTHROPIC_API_KEY=…
+LLM_MODEL=sonnet         # puis ANTHROPIC_API_KEY=…
 ```
 
-| `LLM_PROVIDER`  | Alias      | Clé attendue        | Modèle par défaut      | API             |
-| --------------- | ---------- | ------------------- | ---------------------- | --------------- |
-| `openai`        | `chatgpt`  | `OPENAI_API_KEY`    | `gpt-5.6-terra`        | Responses       |
-| `anthropic`     | `claude`   | `ANTHROPIC_API_KEY` | `claude-sonnet-5`      | Messages        |
-| `mistral`       | —          | `MISTRAL_API_KEY`   | `mistral-large-latest` | chat/completions|
-| `deepseek`      | —          | `DEEPSEEK_API_KEY`  | `deepseek-chat`        | chat/completions|
-| `openai-compat` | `local`, `localmodel`, `ollama`, `qwen`, `groq`, `openrouter`, `together` | `LLM_API_KEY` (facultative) | `LLM_MODEL` (requis) | chat/completions |
+`LLM_MODEL` accepte un **alias du registre** (`sonnet`, `opus`, `haiku`,
+`gpt-terra`, `gpt-luna`, `ds-flash`, `ds-pro`, `mistral`, `gemini-pro`,
+`grok`, `kimi-k3`, `glm`…) ou la forme `fournisseur:identifiant`
+(`zai:glm-5.4-flash`) pour un modèle trop récent pour y figurer. Chaque
+fournisseur lit sa propre clé : `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GEMINI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`,
+`MOONSHOT_API_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`.
+`providall models` liste le registre, tarifs compris.
 
-`openai-compat` accepte n'importe quel endpoint parlant le dialecte
-`/chat/completions` — un modèle local suffit :
+Avec **une seule** clé posée dans `.env.local`, `LLM_MODEL` devient même
+facultatif : c'est le modèle par défaut de ce fournisseur qui sert.
+
+N'importe quel serveur parlant `/chat/completions` fait l'affaire — un modèle
+local, par exemple :
 
 ```bash
-LLM_PROVIDER=localmodel
 LLM_BASE_URL=http://localhost:11434/v1
-LLM_MODEL=qwen2.5:14b
+LLM_MODEL=openai_compat:qwen2.5:14b
 ```
 
-Les alias ne changent que la lisibilité de ta config : ils désignent tous
-`openai-compat`, et `LLM_MODEL` reste à renseigner dans tous les cas.
+Ce que providall garantit, quel que soit le fournisseur : appels d'outils, mode
+JSON, effort de raisonnement ramené à l'échelle du modèle, timeout, retries sur
+erreurs transitoires, coût par appel et erreurs typées. Les différences d'API
+(prompt système à part chez Claude, mot « json » obligatoire chez DeepSeek,
+blocs de raisonnement signés à rejouer) ne remontent jamais jusqu'ici.
 
-Ce que la couche `src/lib/llm/` garantit, quel que soit le fournisseur :
-appels d'outils, mode JSON, effort de raisonnement, timeout et retries sur
-erreurs transitoires. Les différences d'API (prompt système à part chez
-Claude, outils aplatis chez OpenAI, mot « json » obligatoire chez DeepSeek,
-blocs de raisonnement à rejouer) sont absorbées par le provider concerné —
-le reste du code ne les voit jamais.
-
-**Ajouter un fournisseur** : une entrée dans `PROVIDERS`
-(`src/lib/llm/providers/index.ts`). S'il parle `/chat/completions`, il réutilise
-la fonction `chatCompletions` existante et ne demande aucun code.
+Ce qui reste dans `src/lib/llm.ts` est ce qui est propre à l'agenda : la forme
+des outils du reste du code, les modèles par rôle, et trois paliers d'effort —
+délibérer sur une semaine et écrire deux phrases dans le chat ne méritent pas
+le même prix.
 
 ## ⚙️ Configuration
 
 | Variable                    | Défaut                | Rôle                                        |
 | --------------------------- | --------------------- | ------------------------------------------- |
-| `LLM_PROVIDER`              | `openai`              | Fournisseur actif (tableau ci-dessus)       |
-| `LLM_MODEL`                 | défaut du provider    | Surcharge globale du modèle                 |
-| `LLM_MODEL_PLANNER`, …      | `LLM_MODEL`           | Modèle d'un rôle (planner/coach/work/…)     |
-| `LLM_REASONING_EFFORT`      | `xhigh`               | `none`…`max` — ignoré si le modèle n'en a pas |
-| `LLM_REASONING_EFFORT_CHAT` | `medium`              | Effort de la boucle de chat (plus léger)    |
-| `LLM_MAX_TOKENS`            | `8192`                | Plafond de sortie (obligatoire chez Claude) |
+| `LLM_MODEL`                 | seule clé posée       | Alias du registre ou `fournisseur:identifiant` |
+| `LLM_MODEL_PLANNER`, …      | `LLM_MODEL`           | Modèle d'un rôle (planner/coach/work/leisure/chef) |
+| `LLM_EFFORT`                | `xhigh`               | `none`…`max` — délibération (Conseil, planner) |
+| `LLM_EFFORT_CHAT`           | `medium`              | Effort de la boucle de chat (plus léger)    |
+| `LLM_EFFORT_RETOUCH`        | `high`                | Effort d'une retouche ciblée de plan        |
+| `LLM_MAX_TOKENS`            | défaut du modèle      | Plafond de sortie                           |
 | `LLM_TIMEOUT_MS`            | `600000`              | Timeout d'un appel                          |
+| `LLM_DEBUG`                 | —                     | `1` : journalise chaque appel (modèle, jetons, coût) |
 | `NEXT_PUBLIC_SPEECH_LANG`   | `fr-FR`               | Langue du moteur vocal du navigateur        |
 | `NEXT_PUBLIC_WHISPER_MODEL` | `Xenova/whisper-base` | Modèle Whisper local (dictée, repli)        |
 | `NEXT_PUBLIC_WHISPER_LANG`  | `french`              | Langue de transcription Whisper             |
@@ -153,11 +157,7 @@ src/
 │   ├── MicButton.tsx         # dictée vocale en direct
 │   └── MemoryPanel.tsx       # mémoire & préférences
 └── lib/
-    ├── llm/                  # couche multi-provider (voir « Choisir son modèle »)
-    │   ├── index.ts          # llmChat() — seul point d'entrée du reste du code
-    │   ├── env.ts            # LLM_PROVIDER, modèles par rôle, effort
-    │   ├── http.ts           # timeout, retries, lecture SSE
-    │   └── providers/        # openai · anthropic · chat-completions
+    ├── llm.ts                # llmChat() sur providall : outils, rôles, efforts
     ├── store.ts              # persistance JSON
     ├── agent.ts              # outils + orchestration de l'agent
     ├── dates.ts              # utilitaires de dates

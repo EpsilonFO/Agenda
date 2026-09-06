@@ -75,7 +75,8 @@ export type RuleId =
   | "work-split"
   | "missing-place"
   | "delos-weekend"
-  | "imprevu-deadline";
+  | "imprevu-deadline"
+  | "engagement-place";
 
 export type Violation = {
   rule: RuleId;

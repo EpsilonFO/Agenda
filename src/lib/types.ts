@@ -247,6 +247,9 @@ export type WeekPlan = {
   input?: import("./planner/contracts").WeekInput;
   /** Résumé lisible du verdict du solveur (volumes, trajets, candidats). */
   summary?: string;
+  /** Replanification qui n'a RIEN changé (patch vide ou plan identique) : le
+   *  greffier doit le dire au lieu d'annoncer une correction fantôme. */
+  unchanged?: boolean;
 };
 
 export type ChatMessage = {

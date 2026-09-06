@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import ChatMessages from "@/components/ChatMessages";
 import MicButton from "@/components/MicButton";
 import { useDictationField } from "@/lib/useDictationField";
+import { useAutoGrow } from "@/lib/useAutoGrow";
 import ChatModeSwitcher, { chatModeInfo } from "@/components/ChatModeSwitcher";
 import SessionDrawer from "@/components/SessionDrawer";
 import type { AgentChat } from "@/lib/useAgentChat";
@@ -30,6 +31,7 @@ export default function ChatSheet({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [micError, setMicError] = useState<string | null>(null);
   const mic = useDictationField(chat.setInput);
+  useAutoGrow(inputRef, mic.preview(chat.input));
   const [drawerOpen, setDrawerOpen] = useState(false);
   const info = header ?? chatModeInfo(chat.mode);
 
@@ -162,7 +164,7 @@ export default function ChatSheet({
               }}
               rows={1}
               placeholder="Écris ton message…"
-              className="field max-h-32 flex-1 resize-none"
+              className="field max-h-32 flex-1 resize-none overflow-y-auto"
             />
             <button
               onClick={submit}

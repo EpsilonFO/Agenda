@@ -12,12 +12,11 @@
  * conservés en lecture pour les plans historiques.
  */
 
-import { MODELS } from "../llm";
 import { listEvents, getWeekPlan } from "../store";
 import { addDays, parseIso } from "../dates";
 import type { EventItem, PlannedSession, WeekPlan, WorkoutPlan } from "../types";
 import { loadLifeConfig, placeById, type LifeConfig } from "./config";
-import type { RetouchOp, WeekInput } from "./contracts";
+import type { DelosDecision, RetouchOp, WeekInput } from "./contracts";
 import type { ChatFn } from "./llm";
 import {
   applyRetouchOps,
@@ -33,8 +32,10 @@ import type { FixedItem, PlanSession } from "./types";
 export type CouncilOptions = {
   /** Client de chat injectable — utilisé UNIQUEMENT par la retouche. */
   chat?: ChatFn;
-  /** Modèle des émetteurs/Simone (défaut : MODELS.small via lib/llm). */
+  /** Modèle explicite de la retouche (défaut : le rôle `planner` de lib/llm). */
   model?: string;
+  /** Plan précédent (replanification) : le solveur y reprend ce qu'on ne change pas. */
+  previous?: PlanSession[];
   /** Trace de debug (voir trace.ts) — branchée automatiquement par runCouncilFromStore. */
   onEvent?: (agent: string, kind: "system" | "request" | "response" | "invalid" | "violations" | "repair" | "info", content: string) => void;
 };
@@ -121,7 +122,7 @@ export async function runCouncil(
     "request",
     JSON.stringify({ input, fixed }, null, 1)
   );
-  const placement = await placeWeek(cfg, { input, fixed }, { onEvent: opts.onEvent });
+  const placement = await placeWeek(cfg, { input, fixed, previous: opts.previous }, { onEvent: opts.onEvent });
   console.log(
     `[planificateur] ${placement.sessions.length} sessions, ${placement.violations.length} violation(s) restante(s)`
   );
@@ -135,7 +136,16 @@ export async function runCouncil(
   // Même chose pour la surcharge sport (vécu : la rotation par défaut recopiée
   // dans `imposer`) et pour les décisions non honorées (sinon la demi-journée
   // demandée disparaît sans que personne ne sache pourquoi).
-  const overrideNotes = Object.entries(input.overrides)
+  // La MODALITÉ Delos n'est pas une exception aux quotas (le volume ne bouge
+  // pas) : elle se dit en clair plutôt que sous l'avertissement « quotas ».
+  const { delosPresentielHalfDays, ...quotaOverrides } = input.overrides;
+  const modaliteNote =
+    delosPresentielHalfDays !== undefined
+      ? [
+          `Delos cette semaine : ${delosPresentielHalfDays} demi-journée(s) sur place, tout le reste du volume est reporté à distance (le total du CDD est inchangé).`,
+        ]
+      : [];
+  const overrideNotes = Object.entries(quotaOverrides)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}=${v}`);
   const sportNotes = [
@@ -146,6 +156,7 @@ export async function runCouncil(
     (r) => `Demande non honorée (${r.kind} ${r.ref}) : ${r.reason} — le solveur a choisi à sa place.`
   );
   const warnings = [
+    ...modaliteNote,
     ...(overrideNotes.length
       ? [
           `⚠️ Exceptions aux quotas appliquées cette semaine : ${overrideNotes.join(", ")}. Si tu ne les as pas demandées, relance en précisant que les quotas sont normaux.`,
@@ -174,28 +185,47 @@ export async function runCouncil(
 
 /** Résumé lisible du verdict — ce que le greffier relaie pour expliquer le plan. */
 function summarize(cfg: LifeConfig, placement: OptimizeResult): string {
+  return [
+    ...sessionFacts(cfg, placement.sessions, placement.monumiaTargetHours),
+    `${placement.candidatesTried} candidats évalués, score ${placement.score.total.toFixed(1)}`,
+  ].join(" · ");
+}
+
+/**
+ * Les faits lisibles DEPUIS LES SEULES SÉANCES — donc encore vrais après une
+ * retouche manuelle, contrairement au verdict du solveur (cible Monumia,
+ * candidats, score) qui ne vaut que pour le plan qu'il a produit.
+ */
+function sessionFacts(
+  cfg: LifeConfig,
+  sessions: PlanSession[],
+  monumiaTargetHours?: number
+): string[] {
   const dur = (s: { start: string; end: string }) =>
     (new Date(s.end).getTime() - new Date(s.start).getTime()) / 3600000;
   const isWeekend = (iso: string) => [0, 6].includes(new Date(iso).getDay());
-  const monumia = placement.sessions.filter((s) => s.category === "monumia");
+  const monumia = sessions.filter((s) => s.category === "monumia");
   const monumiaH = monumia.reduce((a, s) => a + dur(s), 0);
   const weekendH = monumia.filter((s) => isWeekend(s.start)).reduce((a, s) => a + dur(s), 0);
   const delosDays = [
     ...new Set(
-      placement.sessions
+      sessions
         .filter((s) => s.category === "delos" && s.placeId === cfg.work.delos.placeId)
         .map((s) => WEEKDAYS_FR[new Date(s.start).getDay()])
     ),
   ];
-  const trajets = placement.sessions.filter((s) => s.category === "trajet");
+  const trajets = sessions.filter((s) => s.category === "trajet");
   const trajetMin = Math.round(trajets.reduce((a, s) => a + dur(s), 0) * 60);
   const fmtH = (h: number) => (Number.isInteger(h) ? `${h}` : h.toFixed(1));
+  const cible =
+    monumiaTargetHours === undefined
+      ? ""
+      : ` (cible ${fmtH(monumiaTargetHours)}h${weekendH ? `, dont ${fmtH(weekendH)}h le week-end` : ", week-end libre"})`;
   return [
-    `Monumia ${fmtH(monumiaH)}h (cible ${fmtH(placement.monumiaTargetHours)}h${weekendH ? `, dont ${fmtH(weekendH)}h le week-end` : ", week-end libre"})`,
+    `Monumia ${fmtH(monumiaH)}h${cible}`,
     `Delos présentiel : ${delosDays.join(" et ") || "aucun"}`,
     `${trajets.length} trajet(s) inter-zones (${trajetMin} min)`,
-    `${placement.candidatesTried} candidats évalués, score ${placement.score.total.toFixed(1)}`,
-  ].join(" · ");
+  ];
 }
 
 const WEEKDAYS_FR = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
@@ -231,9 +261,41 @@ export async function runCouncilFromStore(
   } finally {
     trace
       .save()
-      .then((file) => console.log(`[planificateur] trace de debug : ${file}`))
+      .then((file) => file && console.log(`[planificateur] trace de debug : ${file}`))
       .catch(() => {});
   }
+}
+
+/**
+ * Les demi-journées Delos telles que POSÉES, écrites en décisions dans la
+ * demande. Ne touche à rien si la demande en porte déjà (choix explicites de
+ * l'utilisateur : ils priment).
+ */
+function withPlacedDelos(cfg: LifeConfig, input: WeekInput, sessions: PlanSession[]): WeekInput {
+  if (input.decisions.delos.length > 0) return input;
+  const placed = placedDelosDecisions(cfg, sessions);
+  if (placed.length === 0) return input;
+  return { ...input, decisions: { ...input.decisions, delos: placed } };
+}
+
+export function placedDelosDecisions(cfg: LifeConfig, sessions: PlanSession[]): DelosDecision[] {
+  const byDate = new Map<string, PlanSession[]>();
+  for (const s of sessions) {
+    if (s.category !== "delos") continue;
+    const date = s.start.slice(0, 10);
+    byDate.set(date, [...(byDate.get(date) ?? []), s]);
+  }
+  const hour = (s: PlanSession) => Number(s.start.slice(11, 13));
+  return [...byDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, list]) => {
+      const presentiel = list.some((s) => s.placeId === cfg.work.delos.placeId);
+      const matin = list.some((s) => hour(s) < 13);
+      const apresMidi = list.some((s) => hour(s) >= 13);
+      const gabarit: DelosDecision["gabarit"] =
+        matin && apresMidi ? "journee" : matin ? "matin" : "apres-midi";
+      return { date, gabarit, modalite: presentiel ? "presentiel" : "distance" };
+    });
 }
 
 /** PlannedSession (stocké) → PlanSession (avec ids stables). */
@@ -299,21 +361,54 @@ export async function replanPlanFromStore(
   const onEvent = opts.onEvent ?? trace.onEvent;
   try {
     const fixed = await loadWeekFixed(cfg, weekStart);
+    const prevSessions = toPlanSessions(previous);
+    // La demande d'origine ne dit pas OÙ le solveur a posé Delos (il l'a
+    // choisi seul) : on l'y écrit avant de la montrer au greffier. Sinon il n'a
+    // rien à recopier et « déplace Delos vendredi → mercredi » ne renvoie que
+    // mercredi — les autres jours redeviennent libres et bougent (vécu).
+    const baseInput = withPlacedDelos(cfg, previous.input, prevSessions);
     const { input, patch } = await replanInput(
       cfg,
-      { input: previous.input, changeNote, sessions: toPlanSessions(previous), fixed },
+      { input: baseInput, changeNote, sessions: prevSessions, fixed },
       { chat: opts.chat, model: opts.model, onEvent }
     );
     onEvent("replanification", "info", `patch appliqué :\n${JSON.stringify(patch, null, 1)}`);
-    const plan = await runCouncil(cfg, input, fixed, { ...opts, onEvent });
-    const warnings = [...patch.warnings.map((w) => `Non traduit : ${w}`), ...(plan.warnings ?? [])];
-    return { ...plan, warnings: warnings.length ? warnings : undefined, committed: false };
+    const plan = await runCouncil(cfg, input, fixed, { ...opts, onEvent, previous: prevSessions });
+    // Le solveur est déterministe : un patch qui n'a rien mordu redonne le plan
+    // à l'octet près. Vécu : le greffier annonçait deux fois de suite « c'est
+    // corrigé » sur un planning identique. On le CONSTATE ici plutôt que de
+    // faire confiance au patch — un patch non vide peut être sans effet.
+    const unchanged = sameSessions(previous.sessions, plan.sessions);
+    const warnings = [
+      ...(unchanged
+        ? [
+            "PLAN INCHANGÉ : la consigne n'a modifié aucune séance. Ne dis pas qu'elle est appliquée — explique ce qui bloque et demande une reformulation.",
+          ]
+        : []),
+      ...patch.warnings.map((w) => `Non traduit : ${w}`),
+      ...(plan.warnings ?? []),
+    ];
+    return {
+      ...plan,
+      warnings: warnings.length ? warnings : undefined,
+      unchanged,
+      committed: false,
+    };
   } finally {
     trace
       .save()
-      .then((file) => console.log(`[planificateur] trace de debug : ${file}`))
+      .then((file) => file && console.log(`[planificateur] trace de debug : ${file}`))
       .catch(() => {});
   }
+}
+
+/** Deux plannings posent-ils exactement les mêmes séances ? (créneau + titre) */
+function sameSessions(a: PlannedSession[], b: PlannedSession[]): boolean {
+  const key = (s: PlannedSession) => `${s.start}|${s.end}|${s.title}`;
+  if (a.length !== b.length) return false;
+  const sa = a.map(key).sort();
+  const sb = b.map(key).sort();
+  return sa.every((k, i) => k === sb[i]);
 }
 
 /** Retouche par opérations LLM (repli : plans sans demande stockée), plan NON commité. */
@@ -366,6 +461,11 @@ function rebuildPlan(
   return {
     ...previous,
     sessions: toPlannedSessions(cfg, result.sessions),
+    // Le résumé de `previous` décrit le plan D'AVANT la retouche : le garder
+    // donne une carte qui se contredit — « Monumia 23.5h » au-dessus d'un
+    // avertissement « 0h de Monumia ». On recalcule ce qui est recalculable, et
+    // on laisse tomber le verdict du solveur, qui ne vaut plus rien ici.
+    summary: [...sessionFacts(cfg, result.sessions), "plan retouché à la main"].join(" · "),
     workouts: oldWorkouts.length ? workouts : undefined,
     warnings: result.warnings.length ? result.warnings : undefined,
     blockingErrors: result.blockingErrors.length ? result.blockingErrors : undefined,

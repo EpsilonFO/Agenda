@@ -164,3 +164,23 @@ export function upcomingDaysPreview(base: Date = new Date(), days = 14): string 
     formatFullDate(addDays(start, i))
   ).join("\n");
 }
+
+/**
+ * Les deux ancres de semaine, RÉSOLUES côté serveur, à injecter dans un prompt.
+ *
+ * Un modèle qui calcule lui-même « le lundi de la semaine prochaine » se
+ * trompe de sept jours dès que la conversation a lieu un dimanche (convention
+ * US : la semaine commence le dimanche) — vécu, une semaine entière planifiée
+ * et validée au mauvais endroit. On lui donne donc la réponse.
+ */
+export function weekAnchors(base: Date = new Date()): string {
+  const line = (label: string, monday: Date) =>
+    `${label} : ${formatFullDate(monday)} → ${formatFullDate(addDays(monday, 6))} (weekStart=${toLocalIso(
+      monday
+    ).slice(0, 10)})`;
+  const thisMonday = startOfWeek(base);
+  return [
+    line("SEMAINE EN COURS", thisMonday),
+    line("SEMAINE PROCHAINE", addDays(thisMonday, 7)),
+  ].join("\n");
+}

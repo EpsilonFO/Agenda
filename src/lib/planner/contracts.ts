@@ -52,10 +52,18 @@ const SessionCategorySchema = z.preprocess((v) => {
  * remplit depuis les mots de l'utilisateur, jamais de lui-même.
  */
 export const DelosDecisionSchema = z.object({
-  /** Jour (YYYY-MM-DD) où poser du Delos présentiel. */
+  /** Jour (YYYY-MM-DD) où poser du Delos. */
   date: IsoDateSchema,
   /** journee = 2 gabarits (journée Paris) ; matin/apres-midi = un seul. */
   gabarit: z.enum(["journee", "matin", "apres-midi"]).default("journee"),
+  /**
+   * presentiel (défaut) = demi-journée sur place ; distance = un bloc d'heures
+   * Delos à distance ce jour-là. Sans ça, une semaine tout-distanciel n'avait
+   * AUCUN moyen d'être pilotée : le solveur retirait les jours au hasard à
+   * chaque replanification (vécu : « Delos vendredi → mercredi » déplaçait
+   * aussi celui du jeudi).
+   */
+  modalite: z.enum(["presentiel", "distance"]).optional(),
 });
 export type DelosDecision = z.infer<typeof DelosDecisionSchema>;
 
@@ -63,7 +71,13 @@ export const SportDecisionSchema = z.object({
   /** id d'activité de la config. */
   activityId: z.string().min(1),
   date: IsoDateSchema,
-  moment: z.enum(["matin", "fin-apres-midi"]).default("fin-apres-midi"),
+  /**
+   * midi = au creux de midi, collée au dernier bloc du matin, déjeuner juste
+   * après — « avant de manger », « entre le cours et le déjeuner ». Sans cette
+   * valeur, « natation avant de manger » n'avait pas de traduction et finissait
+   * en fin d'après-midi (vécu).
+   */
+  moment: z.enum(["matin", "midi", "fin-apres-midi"]).default("fin-apres-midi"),
 });
 export type SportDecision = z.infer<typeof SportDecisionSchema>;
 
@@ -118,6 +132,31 @@ export const WeekInputSchema = z.object({
         day: IsoDateSchema.optional(),
         start: HHMM.optional(),
         end: HHMM.optional(),
+        note: z.string().optional(),
+      })
+    )
+    .default([]),
+  /**
+   * RENDEZ-VOUS à heure FIXE de la semaine : inscription, rdv médecin, appel,
+   * réunion… Ce ne sont ni des imprévus (des HEURES de travail à caser avant
+   * une échéance, que le solveur place où il veut) ni des sorties (le soir, et
+   * comptées dans les quotas de vie perso) : ce sont des blocs posés à l'heure
+   * dite, ni négociés ni déplacés. Sans ce champ, le greffier n'avait d'autre
+   * choix que de les faire passer pour des imprévus — vécu : « inscription
+   * SUAPS mercredi 13h, 15 min » posée le lundi en bloc d'1h30.
+   */
+  engagements: z
+    .array(
+      z.object({
+        label: z.string().min(1),
+        day: IsoDateSchema,
+        start: HHMM,
+        /** Fin explicite ; sinon start + durationMin. */
+        end: HHMM.optional(),
+        /** Durée en minutes si `end` est absent (défaut 30). */
+        durationMin: z.number().int().positive().max(600).optional(),
+        /** Zone (id de cluster) quand le rdv est ailleurs que la zone du jour. */
+        zone: z.string().optional(),
         note: z.string().optional(),
       })
     )
@@ -182,6 +221,12 @@ export const WeekInputSchema = z.object({
       // recours (« semaine impossible autrement »).
       delosGroupHalfDays: z.boolean().optional(),
       delosWeekendOk: z.boolean().optional(),
+      // MODALITÉ Delos : combien de demi-journées se font SUR PLACE cette
+      // semaine. Le VOLUME total ne bouge pas — ce qui quitte le présentiel
+      // rebascule automatiquement en heures à distance (voir applyOverrides).
+      // C'est la seule façon de dire « cette semaine je fais tout à distance »
+      // sans toucher au CDD.
+      delosPresentielHalfDays: z.number().int().min(0).max(6).optional(),
     })
     .default({}),
 });
@@ -204,6 +249,8 @@ export const ReplanPatchSchema = z.object({
   sortiesAjoutees: WeekInputSchema.shape.sortiesDatees,
   sortiesSupprimees: z.array(z.string()).default([]),
   indisponibilitesAjoutees: WeekInputSchema.shape.indisponibilites,
+  engagementsAjoutes: WeekInputSchema.shape.engagements,
+  engagementsSupprimes: z.array(z.string()).default([]),
   sport: WeekInputSchema.shape.sport.optional(),
   overrides: WeekInputSchema.shape.overrides.optional(),
   voitureDispo: z.boolean().optional(),
@@ -232,6 +279,18 @@ export function applyReplanPatch(input: WeekInput, patch: ReplanPatch): WeekInpu
     ...patch.sortiesAjoutees,
   ];
   next.indisponibilites = [...next.indisponibilites, ...patch.indisponibilitesAjoutees];
+  // Un rendez-vous re-daté (« non, c'était mercredi ») arrive en « ajouté »
+  // sans que le modèle pense à supprimer l'ancien : même label = même
+  // rendez-vous, la version du patch remplace celle d'origine. Sans ça, la
+  // correction produisait un doublon lundi + mercredi.
+  next.engagements = [
+    ...next.engagements.filter(
+      (en) =>
+        !patch.engagementsSupprimes.some((l) => sameLabel(en.label, l)) &&
+        !patch.engagementsAjoutes.some((a) => sameLabel(a.label, en.label))
+    ),
+    ...patch.engagementsAjoutes,
+  ];
   if (patch.sport) next.sport = patch.sport;
   if (patch.overrides) next.overrides = { ...next.overrides, ...patch.overrides };
   if (patch.voitureDispo !== undefined) next.voitureDispo = patch.voitureDispo;

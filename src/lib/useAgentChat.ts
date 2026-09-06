@@ -169,6 +169,34 @@ export function useAgentChat(onChanged: () => void): AgentChat {
                 ...prev,
                 [activeMode]: [session, ...(prev[activeMode] ?? [])],
               }));
+              // Le titre soigné est un appel LLM : on le lance SANS l'attendre,
+              // il se génère pendant que l'agent travaille et remplace le titre
+              // provisoire quand il arrive. L'attendre ici coûtait ~3 s de
+              // silence avant même que la question ne parte.
+              void fetch(`/api/agent/sessions/${session.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: activeMode, firstUserMessage: content }),
+              })
+                .then((res) => (res.ok ? res.json() : null))
+                .then((data: { title?: string } | null) => {
+                  if (!data?.title) return;
+                  const renamed = { ...session, title: data.title };
+                  setActiveSessions((prev) =>
+                    prev[activeMode]?.id === session.id
+                      ? { ...prev, [activeMode]: renamed }
+                      : prev
+                  );
+                  setSessionsList((prev) => ({
+                    ...prev,
+                    [activeMode]: (prev[activeMode] ?? []).map((x) =>
+                      x.id === session.id ? renamed : x
+                    ),
+                  }));
+                })
+                .catch(() => {
+                  // Titre provisoire conservé — sans conséquence.
+                });
             }
           } catch {
             // non critique \u2014 la conversation continue sans archivage

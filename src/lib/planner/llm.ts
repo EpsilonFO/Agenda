@@ -8,11 +8,14 @@
 
 import type { ZodType } from "zod";
 import { llmChat, parseJsonLoose } from "../llm";
-import type { LlmMessage } from "../llm";
+import type { LlmMessage, ModelRole } from "../llm";
 
 /** Signature minimale d'un appel chat (injectable dans les tests). */
 export type ChatFn = (opts: {
-  model: string;
+  /** Rôle → LLM_MODEL_<RÔLE>. Ignoré si `model` est fourni. */
+  role?: ModelRole;
+  /** Modèle explicite (alias du registre ou `fournisseur:identifiant`). */
+  model?: string;
   messages: LlmMessage[];
   json?: boolean;
   /** Étiquette pour les logs (nom de l'agent). */
@@ -36,7 +39,10 @@ export class AgentOutputError extends Error {
 export type CallJsonOptions = {
   /** Nom de l'agent (pour les erreurs/logs). */
   agent: string;
-  model: string;
+  /** Rôle → LLM_MODEL_<RÔLE>. Ignoré si `model` est fourni. */
+  role?: ModelRole;
+  /** Modèle explicite, prioritaire sur le rôle. */
+  model?: string;
   system: string;
   user: string;
   /** Nombre de RETRIES après le premier essai (défaut 2). */
@@ -70,6 +76,7 @@ export async function callJson<T>(
   let lastIssues = "";
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const message = await chat({
+      role: opts.role,
       model: opts.model,
       messages,
       json: true,

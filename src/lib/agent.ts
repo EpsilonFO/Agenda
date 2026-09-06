@@ -18,7 +18,7 @@ import {
   listMemory,
   addMemory,
 } from "./store";
-import { MODELS, llmChat, LlmError, chatEffort } from "./llm";
+import { llmChat, textOf, chatEffort, APIError, ConfigError, ProvidallError } from "./llm";
 import type { LlmMessage } from "./llm";
 import type { ChatMode } from "./agents";
 import { normalizeAttendees, resolveInvite } from "./google/invites";
@@ -29,6 +29,7 @@ import {
   upcomingDaysPreview,
   toLocalIso,
   startOfWeek,
+  weekAnchors,
 } from "./dates";
 import { z } from "zod";
 import type { AgentResponse, WeekPlan } from "./types";
@@ -64,7 +65,7 @@ const tools: ToolDef[] = [
     function: {
       name: "list_events",
       description:
-        "Liste tous les événements existants de l'agenda. À appeler avant de planifier pour connaître les créneaux déjà occupés.",
+        "Liste TOUS les événements de l'agenda, avec leurs ids. Sert à identifier de quoi parle l'utilisateur et à repérer les créneaux occupés, au-delà de la fenêtre déjà présente dans ton contexte. À appeler plutôt que de poser une question à l'utilisateur.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -254,7 +255,7 @@ const councilTools: ToolDef[] = [
     function: {
       name: "propose_week_plan",
       description:
-        "Lance le PLANIFICATEUR DÉTERMINISTE : un solveur place la semaine COMPLÈTE sous contraintes (config de vie) et la PROPOSE (carte avec bouton Valider — rien n'est écrit dans l'agenda avant validation par l'utilisateur). Structure la demande de l'utilisateur dans les champs : ne mets dans notes que ce qui ne rentre nulle part ailleurs.",
+        "Lance le PLANIFICATEUR DÉTERMINISTE : un solveur place la semaine COMPLÈTE sous contraintes (config de vie) et l'ÉCRIT directement dans l'agenda (carte récapitulative dans le chat ; seul un plan qui viole encore une règle reste proposé, à valider). Structure la demande de l'utilisateur dans les champs : ne mets dans notes que ce qui ne rentre nulle part ailleurs.",
       parameters: {
         type: "object",
         properties: {
@@ -266,7 +267,8 @@ const councilTools: ToolDef[] = [
           notes: { type: "string", description: "Contexte libre résiduel." },
           imprevus: {
             type: "array",
-            description: "TP, projets, urgences de la semaine.",
+            description:
+              "HEURES de travail à caser avant une échéance : TP, projets, urgences. Le solveur choisit quand. Un rendez-vous à jour et heure fixes n'est PAS un imprévu → engagements.",
             items: {
               type: "object",
               properties: {
@@ -296,6 +298,24 @@ const councilTools: ToolDef[] = [
                 end: { type: "string", description: "HH:MM" },
               },
               required: ["label"],
+            },
+          },
+          engagements: {
+            type: "array",
+            description:
+              "RENDEZ-VOUS à heure FIXE de la semaine : inscription, rdv médecin, appel, réunion, examen… Dès que l'utilisateur donne un JOUR ET UNE HEURE (« inscription SUAPS mercredi à 13h, 15 min »), c'est ici — jamais dans imprevus (qui sont des HEURES de travail que le solveur case où il veut avant une échéance) ni dans sortiesDatees (soirées, comptées dans la vie perso). Le bloc est posé exactement à l'heure dite.",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                day: { type: "string", description: "YYYY-MM-DD" },
+                start: { type: "string", description: "HH:MM" },
+                end: { type: "string", description: "HH:MM (sinon durationMin)" },
+                durationMin: { type: "number", description: "Durée en minutes si end absent (défaut 30)." },
+                zone: { type: "string", description: "Zone du rdv (id de zone) s'il est ailleurs que d'habitude." },
+                note: { type: "string" },
+              },
+              required: ["label", "day", "start"],
             },
           },
           indisponibilites: {
@@ -350,6 +370,11 @@ const councilTools: ToolDef[] = [
                   properties: {
                     date: { type: "string", description: "YYYY-MM-DD" },
                     gabarit: { type: "string", enum: ["journee", "matin", "apres-midi"] },
+                    modalite: {
+                      type: "string",
+                      enum: ["presentiel", "distance"],
+                      description: "Défaut presentiel. distance = bloc d'heures Delos à distance ce jour-là.",
+                    },
                   },
                   required: ["date"],
                 },
@@ -361,7 +386,11 @@ const councilTools: ToolDef[] = [
                   properties: {
                     activityId: { type: "string" },
                     date: { type: "string", description: "YYYY-MM-DD" },
-                    moment: { type: "string", enum: ["matin", "fin-apres-midi"] },
+                    moment: {
+                      type: "string",
+                      enum: ["matin", "midi", "fin-apres-midi"],
+                      description: "midi = creux de midi, collée au dernier bloc du matin, déjeuner juste après (« avant de manger »).",
+                    },
                   },
                   required: ["activityId", "date"],
                 },
@@ -398,6 +427,11 @@ const councilTools: ToolDef[] = [
                 type: "boolean",
                 description: "true = Delos toléré le week-end EN DERNIER RECOURS cette semaine.",
               },
+              delosPresentielHalfDays: {
+                type: "number",
+                description:
+                  "MODALITÉ Delos de la semaine : nombre de demi-journées faites SUR PLACE. Le volume total est conservé — ce qui quitte le présentiel repasse automatiquement en heures à distance. « Je fais tout à distance cette semaine » → 0 ; « une seule demi-journée sur place » → 1. C'est la SEULE façon d'exprimer une semaine Delos à distance.",
+              },
             },
           },
         },
@@ -429,7 +463,7 @@ const councilTools: ToolDef[] = [
     function: {
       name: "edit_plan_sessions",
       description:
-        "Applique des modifications PRÉCISES au plan de la semaine, instantanément et sans solveur. À utiliser dès que tu sais DÉJÀ quelle séance toucher ET son créneau exact — c'est le cas normal d'un « déplace X à mardi 14h », « supprime la séance de jeudi », « ajoute 2h de Monumia mercredi 9h ». Récupère les ids via list_plan_sessions d'abord. Les garde-fous sont vérifiés : si la modification casse une règle, elle est refusée et expliquée. N'utilise replan_week QUE si le créneau cible n'est pas déterminable sans chercher (« cale ça où ça rentre », « échange ces deux blocs en respectant les trajets ») — replan_week relance le solveur et propose un NOUVEAU plan à valider.",
+        "Applique des modifications PRÉCISES au plan de la semaine, instantanément et sans solveur. À utiliser dès que tu sais DÉJÀ quelle séance toucher ET son créneau exact — c'est le cas normal d'un « déplace X à mardi 14h », « supprime la séance de jeudi », « ajoute 2h de Monumia mercredi 9h ». Récupère les ids via list_plan_sessions d'abord. Les garde-fous sont vérifiés : si la modification casse une règle, le premier appel n'applique rien et renvoie ce qui casse — à toi de le dire à l'utilisateur et de lui demander s'il veut passer outre (s'il confirme, rappelle avec force: true). N'utilise replan_week QUE si le créneau cible n'est pas déterminable sans chercher (« cale ça où ça rentre », « échange ces deux blocs en respectant les trajets ») — replan_week relance le solveur et réécrit la semaine.",
       parameters: {
         type: "object",
         properties: {
@@ -437,6 +471,11 @@ const councilTools: ToolDef[] = [
             type: "string",
             description:
               "'cette semaine', 'semaine prochaine' ou un lundi YYYY-MM-DD. Défaut : cette semaine.",
+          },
+          force: {
+            type: "boolean",
+            description:
+              "Applique MALGRÉ les garde-fous. INTERDIT au premier appel : ne le mets à true que si l'utilisateur, après avoir vu la liste des règles enfreintes, a explicitement confirmé vouloir passer outre.",
           },
           operations: {
             type: "array",
@@ -487,7 +526,7 @@ const councilTools: ToolDef[] = [
     function: {
       name: "replan_week",
       description:
-        "REPLANIFICATION PAR LE SOLVEUR : la consigne est traduite en modification de la demande de la semaine (« muscu jeudi soir », « Delos mardi », « ajoute un dîner vendredi ») puis TOUTE la semaine est re-résolue — déjeuner, Monumia et trajets recalés. Résultat : un nouveau plan PROPOSÉ (carte à valider), rien n'est écrit avant validation. Si tu connais déjà la séance ET son créneau exact, utilise edit_plan_sessions (instantané, appliqué directement).",
+        "REPLANIFICATION PAR LE SOLVEUR : la consigne est traduite en modification de la demande de la semaine (« muscu jeudi soir », « Delos mardi », « ajoute un dîner vendredi ») puis TOUTE la semaine est re-résolue — déjeuner, Monumia et trajets recalés. Résultat : la semaine est réécrite directement dans l'agenda (seul un plan qui viole encore une règle reste proposé, à valider). Si tu connais déjà la séance ET son créneau exact, utilise edit_plan_sessions (instantané, appliqué directement).",
       parameters: {
         type: "object",
         properties: {
@@ -752,11 +791,14 @@ async function runTool(
         };
       }
 
-      // v5.1 : plus d'auto-application. Le plan est PROPOSÉ (carte + bouton
-      // Valider) — c'est l'utilisateur qui l'écrit dans l'agenda, après avoir
-      // regardé le rendu. La validation passe par /api/plan/commit.
+      // Un plan qui respecte toutes les règles s'écrit DIRECTEMENT dans
+      // l'agenda (demande de l'utilisateur, 09/2026 : le bouton Valider était
+      // un clic pour rien — il corrige d'une phrase ce qui ne lui va pas).
+      // Seul un plan encore en violation reste proposé, ci-dessus.
+      await commitWeekPlan(plan);
+      plan.committed = true;
       ctx.actions.push(
-        `Plan proposé pour la semaine du ${input.weekStart} : ${plan.sessions.length} sessions (à valider)`
+        `Semaine du ${input.weekStart} planifiée : ${plan.sessions.length} séances écrites dans l'agenda`
       );
       return {
         result: {
@@ -764,9 +806,9 @@ async function runTool(
           sessionsCount: plan.sessions.length,
           warnings: plan.warnings,
           summary: plan.summary,
-          note: "PLAN PROPOSÉ, pas encore dans l'agenda : la carte affichée porte un bouton Valider. NE rappelle PAS propose_week_plan (déterministe : même demande = même plan). Résume en une phrase les choix du solveur à partir de summary (volume Monumia, jours Delos, trajets), relaie les warnings s'il y en a, puis invite à valider ou à dire ce qu'il faut changer.",
+          note: "PLAN ÉCRIT DANS L'AGENDA. NE rappelle PAS propose_week_plan (déterministe : même demande = même plan). NE liste PAS les séances (la carte les porte). En une phrase, dis les choix du solveur à partir de summary (volume Monumia, jours Delos, trajets), relaie les warnings s'il y en a, et rappelle qu'une phrase suffit pour corriger.",
         },
-        changed: false,
+        changed: true,
       };
     }
     case "list_plan_sessions": {
@@ -815,14 +857,20 @@ async function runTool(
           changed: false,
         };
       }
-      // Une modification qui casse une règle n'est jamais appliquée en silence.
-      if (plan.blockingErrors?.length) {
+      // Une modification qui casse une règle n'est jamais appliquée en SILENCE.
+      // Mais un garde-fou n'est pas un veto : les règles servent à empêcher le
+      // solveur et le modèle de produire une semaine absurde, pas à interdire à
+      // l'utilisateur de disposer de la sienne. Premier appel → on refuse en
+      // disant ce qui casse ; s'il confirme, force le fait passer.
+      const forced = args.force === true;
+      const broken = plan.blockingErrors ?? [];
+      if (broken.length && !forced) {
         ctx.plan = plan;
         return {
           result: {
             weekStart,
-            blockingErrors: plan.blockingErrors,
-            note: "NON APPLIQUÉ : ces opérations introduisent les violations listées. Explique le problème à l'utilisateur et propose un autre créneau, ou laisse-le valider quand même via la carte.",
+            blockingErrors: broken,
+            note: "PAS ENCORE APPLIQUÉ : ces opérations enfreignent les règles listées. Dis à l'utilisateur CE QUI CASSE, en une phrase par règle, et demande-lui s'il veut passer outre. C'est SA semaine : s'il confirme, rappelle edit_plan_sessions avec les MÊMES opérations et force: true. Tu peux aussi proposer un autre créneau s'il en existe un évident.",
           },
           changed: false,
         };
@@ -831,14 +879,18 @@ async function runTool(
       plan.committed = true;
       ctx.plan = plan;
       ctx.actions.push(
-        `Plan de la semaine du ${weekStart} modifié (${parsed.data.length} opération(s))`
+        `Plan de la semaine du ${weekStart} modifié (${parsed.data.length} opération(s))` +
+          (broken.length ? ` — ${broken.length} règle(s) enfreinte(s), passage en force` : "")
       );
       return {
         result: {
           weekStart,
           sessionsCount: plan.sessions.length,
           warnings: plan.warnings,
-          note: "Modification appliquée à l'agenda. Confirme brièvement et relaie les warnings s'il y en a.",
+          brokenRules: broken.length ? broken : undefined,
+          note: broken.length
+            ? "APPLIQUÉ EN FORÇANT, à la demande de l'utilisateur. Confirme en une phrase, puis rappelle SANS insister quelles règles sont désormais enfreintes — il doit savoir dans quel état est sa semaine."
+            : "Modification appliquée à l'agenda. Confirme brièvement et relaie les warnings s'il y en a.",
         },
         changed: true,
       };
@@ -849,7 +901,7 @@ async function runTool(
       if (!plan) {
         return {
           result: {
-            error: `Aucun plan validé pour la semaine du ${weekStart}. Utilise propose_week_plan d'abord (puis valide-le).`,
+            error: `Aucun plan pour la semaine du ${weekStart}. Utilise propose_week_plan d'abord.`,
           },
           changed: false,
         };
@@ -866,16 +918,34 @@ async function runTool(
           changed: false,
         };
       }
-      ctx.actions.push(`Nouveau plan proposé pour la semaine du ${weekStart} (à valider)`);
+      // Une replanification sans effet ne s'annonce PAS comme une correction :
+      // le solveur est déterministe, un plan identique veut dire que la
+      // consigne n'a mordu sur rien. Le dire est plus utile que de le cacher.
+      if (plan.unchanged) {
+        ctx.actions.push(`Replanification sans effet (semaine du ${weekStart})`);
+        return {
+          result: {
+            weekStart,
+            unchanged: true,
+            warnings: plan.warnings,
+            note: "AUCUN CHANGEMENT : le plan re-résolu est IDENTIQUE au précédent — la consigne n'a été traduite en rien. NE DIS SURTOUT PAS qu'elle est appliquée. Dis franchement que ça n'a pas marché, cite ce que tu voulais changer, et propose la voie précise (un rendez-vous à heure fixe se corrige par une nouvelle demande de plan avec le champ engagements, ou par edit_plan_sessions si tu connais la séance et son créneau). NE relance PAS replan_week à l'identique.",
+          },
+          changed: false,
+        };
+      }
+      await commitWeekPlan(plan);
+      plan.committed = true;
+      ctx.plan = plan;
+      ctx.actions.push(`Semaine du ${weekStart} replanifiée et réécrite dans l'agenda`);
       return {
         result: {
           weekStart,
           sessionsCount: plan.sessions.length,
           warnings: plan.warnings,
           summary: plan.summary,
-          note: "NOUVEAU PLAN PROPOSÉ (toute la semaine re-résolue avec la modification) : la carte porte un bouton Valider, rien n'est encore écrit. Résume ce qui a changé, relaie les warnings (dont « Non traduit : … » = ce que la consigne n'a pas pu exprimer), invite à valider.",
+          note: "SEMAINE RÉÉCRITE dans l'agenda (toute la semaine re-résolue avec la modification). NE liste PAS les séances. Dis en une phrase ce qui a changé, relaie les warnings (dont « Non traduit : … » = ce que la consigne n'a pas pu exprimer), et rappelle qu'une phrase suffit pour corriger.",
         },
-        changed: false,
+        changed: true,
       };
     }
     default:
@@ -891,20 +961,25 @@ const JOSIANE_SYSTEM = (today: Date, memoryBlock: string) =>
   `Tu es Josiane, la cheffe d'orchestre de l'agenda personnel de l'utilisateur. Organisée, diplomate mais ferme. Pour l'instant, tu t'occupes UNIQUEMENT de gérer des éléments de l'agenda : créer, déplacer, modifier ou supprimer des événements ponctuels ou récurrents.
 
 Aujourd'hui : ${formatFullDate(today)}.
+${weekAnchors(today)}
 
-Prochains jours (pour te repérer — NE calcule jamais de dates toi-même) :
-${upcomingDaysPreview(today, 14)}
+CHERCHE AVANT DE DEMANDER. Le contexte ci-dessous contient l'agenda des 15 prochains jours, jour par jour, AVEC LES IDS : c'est là que tu identifies de quoi parle l'utilisateur (« les cours de stats », « ma muscu de jeudi », « ceux de la semaine pro »), et tu peux modifier directement depuis ces ids. Au-delà de cette fenêtre, appelle list_events. Ne demande JAMAIS une information que l'agenda te donne déjà — c'est la faute la plus agaçante que tu puisses commettre.
+
+Une question coûte un aller-retour à l'utilisateur. N'en pose une que si, APRÈS avoir regardé l'agenda, il reste deux lectures qui mènent à des modifications DIFFÉRENTES. Et dans ce cas, pose-la en montrant ce que tu as trouvé, sous forme de choix fermé : « j'en vois 5, du lundi 7 au vendredi 11 — je passe les 5 à 9h ? » Jamais une question ouverte du type « de quels jours s'agit-il ? » quand la réponse est à l'agenda.
+
+Interprète comme un humain : « tous » / « tous les cours de stats » = toutes les occurrences que tu vois, d'un coup ; « la semaine pro » = la semaine calendaire suivante ; un titre approximatif = l'événement le plus proche par le sens. Une seule occurrence trouvée, ou toutes cohérentes entre elles → agis sans demander, et dis dans ta réponse ce que tu as modifié et sur quelles dates (l'utilisateur corrige si tu t'es trompée : c'est moins coûteux qu'une question).
 
 Règles :
-- Pour TOUTE date ou jour de semaine, appelle resolve_dates. Ne devine jamais une date.
+- Pour TOUTE date ou jour de semaine hors de la fenêtre ci-dessous, appelle resolve_dates. Ne calcule jamais une date toi-même.
 - Pour un événement qui se répète (ex: "tous les mardis"), utilise create_recurring_event.
-- Utilise list_events avant de modifier pour éviter les chevauchements.
+- Avant de créer ou déplacer, vérifie les chevauchements dans la fenêtre ci-dessous (list_events au-delà).
 - Les dates que tu produis sont au format ISO local sans fuseau (ex: 2026-07-14T09:00:00).
 - Quand l'utilisateur exprime une préférence récurrente, appelle remember.
 - Invitations : pour inviter des gens à un événement, renseigne attendees (emails) dans create_event / update_event — une invitation Google Calendar leur est envoyée automatiquement. Les événements avec source "google" viennent de Google Calendar (invitation reçue, ou créé là-bas) : google.organizer dit qui invite, google.myResponse la réponse de l'utilisateur (needsAction = pas encore répondu), attendees les participants et leurs réponses. Supprimer un tel événement le retire aussi de Google Calendar.
-- Une séance posée par le Conseil ne se modifie JAMAIS avec update_event : le plan stocké resterait périmé et ta modification serait écrasée au prochain passage. Passe par le plan.
+- Une séance posée par le Conseil (marquée « (plan) » dans la fenêtre ci-dessous) ne se modifie JAMAIS avec update_event, même si tu en as l'id : le plan stocké resterait périmé et ta modification serait écrasée au prochain passage. Passe par le plan.
 - Cible connue (tu sais quelle séance et à quel créneau) → list_plan_sessions puis edit_plan_sessions. C'est instantané, et c'est le cas de la grande majorité des demandes.
-- Cible à chercher seulement (« cale ça où ça rentre », « échange ces blocs en respectant les trajets », « muscu plutôt jeudi soir ») → replan_week. Il traduit la consigne et relance le solveur sur toute la semaine : le nouveau plan est PROPOSÉ (carte à valider), pas écrit.
+- Cible à chercher seulement (« cale ça où ça rentre », « échange ces blocs en respectant les trajets », « muscu plutôt jeudi soir ») → replan_week. Il traduit la consigne et relance le solveur sur toute la semaine, puis réécrit l'agenda.
+- Un garde-fou qui refuse n'est PAS un mur : c'est une demande de confirmation. Dis ce qui casse, demande si on passe outre, et si l'utilisateur confirme, rappelle edit_plan_sessions avec les mêmes opérations et force: true. C'est sa semaine — les règles sont là pour empêcher une bêtise du solveur, pas pour lui refuser un ordre explicite.
 - Pour REPLANIFIER toute la semaine, invite l'utilisateur à ouvrir une séance du Conseil.
 - Réponds en français, de façon concise et chaleureuse.
 
@@ -913,9 +988,12 @@ ${memoryBlock}`;
 
 /** Le greffier du planificateur : structure la demande puis lance le solveur. */
 const COUNCIL_HOST_SYSTEM = (today: Date, memoryBlock: string, sportList: string, zoneList: string) =>
-  `Tu es le GREFFIER du planificateur de semaine. Ton unique rôle : STRUCTURER la demande de l'utilisateur en JSON, puis lancer le solveur déterministe qui place et optimise la semaine sous contraintes (les règles de vie sont sa config, il les connaît toutes). Tu ne décides RIEN : tu retranscris ce que l'utilisateur a dit, tu n'inventes AUCUNE valeur. Le plan produit est PROPOSÉ à l'utilisateur (carte avec bouton Valider) : rien n'est écrit dans l'agenda avant qu'il valide.
+  `Tu es le GREFFIER du planificateur de semaine. Ton unique rôle : STRUCTURER la demande de l'utilisateur en JSON, puis lancer le solveur déterministe qui place et optimise la semaine sous contraintes (les règles de vie sont sa config, il les connaît toutes). Tu ne décides RIEN : tu retranscris ce que l'utilisateur a dit, tu n'inventes AUCUNE valeur. Le plan produit est ÉCRIT directement dans l'agenda — l'utilisateur corrige d'une phrase ce qui ne lui va pas. Seul un plan qui viole encore une règle reste proposé, à valider.
 
 Aujourd'hui : ${formatFullDate(today)}.
+${weekAnchors(today)}
+
+LA SEMAINE VISÉE EST LE CHOIX LE PLUS COÛTEUX DE TOUTE LA CONVERSATION : un plan sur la mauvaise semaine écrit des dizaines d'événements au mauvais endroit. Ne calcule JAMAIS un lundi toi-même. « la semaine prochaine » → passe la chaîne "semaine prochaine" (ou le weekStart de SEMAINE PROCHAINE ci-dessus) ; « cette semaine » → "cette semaine". Une date n'est acceptable que si l'utilisateur l'a dite lui-même. Et dans ta réponse, NOMME la semaine que tu as planifiée en toutes lettres (« semaine du lundi 7 septembre ») : c'est ce qui permet à l'utilisateur de repérer une erreur tout de suite.
 
 Prochains jours (NE calcule jamais de dates toi-même, utilise resolve_dates au besoin) :
 ${upcomingDaysPreview(today, 14)}
@@ -926,12 +1004,14 @@ ${sportList}
 ZONES du système (les seuls ids de zone valides) : ${zoneList}
 
 - Dès que tu as de quoi travailler, appelle propose_week_plan en remplissant les champs structurés (imprévus/TP avec échéances, sorties datées, indisponibilités comme « chez les parents », voiture, surcharge sport). Le champ notes ne reçoit que le résiduel.
+- Un RENDEZ-VOUS à jour et heure fixes (inscription, rdv médecin, appel, examen) va dans engagements, avec sa durée — jamais dans imprevus. imprevus = des HEURES de travail à caser avant une échéance, dont le solveur choisit le moment ; y mettre un rendez-vous, c'est le laisser atterrir un autre jour.
+- Delos à distance : « je fais tout à distance cette semaine » / « 3 demi-journées en distanciel » → overrides.delosPresentielHalfDays (0 ici : les 3 demi-journées de volume restent, mais aucune sur place). Le volume est conservé automatiquement, tu n'as rien d'autre à ajuster.
 - Sorties : withWhom = "marine" pour Marine, "amis" pour des amis (sortie entre amis = Paris par défaut), "autre" sinon. La ZONE (champ zone) est ESSENTIELLE pour les trajets : remplis-la quand elle est dite ou évidente ; pour une sortie « autre » sans zone connue, pose LA question (« c'est à Paris ou à Orsay ? ») avant de lancer.
 - Choix explicites (« Delos mardi et jeudi », « muscu jeudi soir », « le dîner plutôt vendredi ») → champ decisions. Le solveur les honore s'ils sont faisables et explique sinon. Ne remplis JAMAIS decisions de toi-même : sans consigne, le solveur choisit.
 - Le champ sport (exclure/imposer) et le champ overrides sont INTERDITS sauf demande explicite de l'utilisateur cette semaine (« pas de natation » → sport.exclure ; « Marine est absente » → sortiesMarineMin 0 ; « pas deux demi-journées Delos le même jour » → delosGroupHalfDays false ; « Delos le week-end si besoin » → delosWeekendOk true). Les quotas et la rotation normaux sont déjà dans la config du solveur : ne les répète pas, ne les ajuste pas, n'aide pas. Le VOLUME Delos est une RÈGLE, aucun override ne le réduit : une semaine empêchée se dit via les indisponibilités.
 - Pour une petite modification d'un plan déjà en place (« décale ma muscu à jeudi »), appelle replan_week.
 - S'il manque une info ESSENTIELLE (quelle semaine ?), pose UNE question courte. Sinon lance-toi : inutile de redemander les règles de vie, le solveur les connaît.
-- Réponds en français, chaleureux et bref. Après un plan : NE réénumère pas les sessions (la carte s'affiche) ; en une phrase, dis les choix du solveur (summary : volume Monumia, jours Delos, trajets), relaie les warnings éventuels, puis invite à valider (bouton de la carte) ou à dire ce qu'il faut changer.
+- Réponds en français, chaleureux et bref. Après un plan : NE réénumère pas les sessions (la carte s'affiche) ; en une phrase, dis les choix du solveur (summary : volume Monumia, jours Delos, trajets), relaie les warnings éventuels, puis rappelle qu'une phrase suffit pour corriger.
 
 Préférences enregistrées de l'utilisateur :
 ${memoryBlock}`;
@@ -1043,7 +1123,7 @@ ${memoryBlock}`;
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const message = await llmChat({
-        model: MODELS.small,
+        role: "small",
         messages,
         tools: modeTools,
         toolChoice: "auto",
@@ -1059,7 +1139,7 @@ ${memoryBlock}`;
           `[agent:${mode}] terminé en ${Math.round((Date.now() - tStart) / 1000)}s (${turn + 1} tour(s))`
         );
         return {
-          reply: message.content || "C'est fait !",
+          reply: textOf(message) || "C'est fait !",
           actions: ctx.actions,
           changed,
           plan: ctx.plan,
@@ -1095,7 +1175,7 @@ ${memoryBlock}`;
     console.error("[agent] échec :", err);
     // Clé absente / provider mal configuré : le message porte déjà le nom de
     // la variable d'environnement à renseigner, quel que soit le fournisseur.
-    if (err instanceof LlmError && (err.kind === "no-key" || err.kind === "config")) {
+    if (err instanceof ConfigError) {
       return {
         reply: `⚠️ ${err.message} Puis relance le serveur.`,
         actions: ctx.actions,
@@ -1105,8 +1185,10 @@ ${memoryBlock}`;
     let reply: string;
     if (err instanceof AgentOutputError) {
       reply = `❌ ${err.agent} n'a pas réussi à produire une réponse exploitable après ${err.attempts} tentatives. Réessaie — si ça persiste, son modèle est peut-être en difficulté.\nDétail : ${err.lastIssues.slice(0, 300)}`;
-    } else if (err instanceof LlmError) {
+    } else if (err instanceof APIError) {
       reply = `❌ Erreur de l'API ${err.provider || "LLM"}${err.status ? ` (${err.status})` : ""} : ${err.message.slice(0, 300)}`;
+    } else if (err instanceof ProvidallError) {
+      reply = `❌ Appel LLM en échec (${err.provider || "?"}) : ${err.message.slice(0, 300)}`;
     } else {
       const msg = err instanceof Error ? err.message : String(err);
       reply = `❌ Erreur interne : ${msg.slice(0, 300)}`;

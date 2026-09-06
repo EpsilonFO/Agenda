@@ -30,3 +30,6 @@ yarn-error.log*
 
 # typescript incremental build info
 *.tsbuildinfo
+
+# Traces de debug du planificateur (PLANNER_TRACE=1)
+data/traces/

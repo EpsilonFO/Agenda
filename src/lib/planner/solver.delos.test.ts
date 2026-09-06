@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { testConfig } from "./__fixtures__/testConfig";
 import { WeekInputSchema } from "./contracts";
+import { applyOverrides } from "./josiane";
 import { checkWeekPlan } from "./guardrails";
 import { solveWeek, type SolverDecisions } from "./solver";
 import type { PlanSession } from "./types";
@@ -103,5 +104,58 @@ describe("Delos — présentiel + heures à distance", () => {
     expect(refus).toHaveLength(1);
     expect(refus[0].ref).toBe("2026-07-31");
     expect(refus[0].reason).toMatch(/quota/i);
+  });
+});
+
+/**
+ * MODALITÉ Delos (v5.2) : « cette semaine j'ai cours tous les jours, je fais
+ * tout à distance » ne réduit RIEN — les demi-journées qui quittent le
+ * présentiel repassent en heures à distance, heure pour heure. Vécu : faute de
+ * ce levier, la demande était ignorée en silence et le solveur imposait deux
+ * demi-journées à Paris avec leurs trajets.
+ */
+describe("modalité Delos — présentiel ↔ distance, volume constant", () => {
+  const base = {
+    presentielHalfDaysPerWeek: 2,
+    groupHalfDays: true,
+    remote: { hoursPerWeek: 4, placeId: "bibli", blockHours: [4, 2] },
+  };
+  const TOTAL = 2 * 4 + 4; // 12h de CDD
+
+  const withOverride = (n: number) => {
+    const input = WeekInputSchema.parse({
+      weekStart: WEEK,
+      overrides: { delosPresentielHalfDays: n },
+    });
+    return { input, cfg: applyOverrides(cfgWith(base), input) };
+  };
+
+  it("0 demi-journée sur place : tout le volume bascule à distance", () => {
+    const { cfg, input } = withOverride(0);
+    expect(cfg.work.delos.presentielHalfDaysPerWeek).toBe(0);
+    expect(cfg.work.delos.remote?.hoursPerWeek).toBe(TOTAL);
+
+    const delos = delosOf(solveWeek(cfg, { input, fixed: [] }));
+    expect(delos.filter((s) => s.placeId === "delos")).toHaveLength(0);
+    expect(delos.reduce((a, s) => a + hours(s), 0)).toBe(TOTAL);
+  });
+
+  it("1 demi-journée sur place : le reste passe à distance (total inchangé)", () => {
+    const { cfg, input } = withOverride(1);
+    expect(cfg.work.delos.remote?.hoursPerWeek).toBe(TOTAL - 4);
+
+    const delos = delosOf(solveWeek(cfg, { input, fixed: [] }));
+    expect(delos.filter((s) => s.placeId === "delos")).toHaveLength(1);
+    expect(delos.reduce((a, s) => a + hours(s), 0)).toBe(TOTAL);
+  });
+
+  it("ne mute pas la config de base", () => {
+    const cfg = cfgWith(base);
+    applyOverrides(cfg, WeekInputSchema.parse({
+      weekStart: WEEK,
+      overrides: { delosPresentielHalfDays: 0 },
+    }));
+    expect(cfg.work.delos.presentielHalfDaysPerWeek).toBe(2);
+    expect(cfg.work.delos.remote?.hoursPerWeek).toBe(4);
   });
 });

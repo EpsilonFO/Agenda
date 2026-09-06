@@ -16,7 +16,7 @@
  * deviennent des blocs fixes : y poser quoi que ce soit = chevauchement.
  */
 
-import { MODELS, retouchEffort } from "../llm";
+import { retouchEffort } from "../llm";
 import { addDays, toLocalIso } from "../dates";
 import type { LifeConfig } from "./config";
 import type { JosianeRetouchOut, ReplanPatch, RetouchOp, WeekInput } from "./contracts";
@@ -69,11 +69,36 @@ export function applyOverrides(cfg: LifeConfig, input: WeekInput): LifeConfig {
       next.work.monumia.minHoursPerWeek,
       Math.min(o.monumiaMaxHours, next.work.monumia.maxHoursPerWeek)
     );
-  // Le QUOTA Delos est une RÈGLE (jamais surchargé) ; son PLACEMENT, si.
+  // Le VOLUME Delos est une RÈGLE (jamais surchargé) ; son PLACEMENT et sa
+  // MODALITÉ, si. « Cette semaine j'ai cours tous les jours, je fais tout à
+  // distance » ne réduit rien : les demi-journées qui quittent le présentiel
+  // rebasculent en heures à distance, heure pour heure. Le total hebdo est
+  // recalculé AVANT modification pour rester l'invariant du calcul.
   if (o.delosGroupHalfDays !== undefined) next.work.delos.groupHalfDays = o.delosGroupHalfDays;
   if (o.delosWeekendOk !== undefined) next.work.delos.weekendOk = o.delosWeekendOk;
+  if (o.delosPresentielHalfDays !== undefined) {
+    const d = next.work.delos;
+    const halfDayHours = halfDayLengthHours(d.halfDayWindows);
+    const totalHours = d.presentielHalfDaysPerWeek * halfDayHours + (d.remote?.hoursPerWeek ?? 0);
+    const wanted = Math.min(o.delosPresentielHalfDays, Math.floor(totalHours / halfDayHours));
+    d.presentielHalfDaysPerWeek = wanted;
+    const remoteHours = Math.max(0, totalHours - wanted * halfDayHours);
+    if (d.remote) d.remote.hoursPerWeek = remoteHours;
+    else if (remoteHours > 0)
+      // Une config sans volet distant n'en avait pas besoin ; dès qu'on retire
+      // du présentiel, il en faut un — sinon les heures disparaissent.
+      d.remote = { hoursPerWeek: remoteHours, placeId: cfg.work.monumia.preferredPlaceIds[0], blockHours: [4, 2] };
+  }
   if (!input.voitureDispo) next.ownedModes = next.ownedModes.filter((m) => m !== "voiture");
   return next;
+}
+
+/** Durée (en heures) d'un gabarit de demi-journée — la moyenne des gabarits
+ *  déclarés, qui font tous la même taille en pratique (9h-13h / 14h-18h). */
+function halfDayLengthHours(windows: { start: string; end: string }[]): number {
+  const min = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+  const total = windows.reduce((a, w) => a + (min(w.end) - min(w.start)), 0);
+  return total / windows.length / 60;
 }
 
 /** Les indisponibilités deviennent des blocs FIXES (rien ne peut s'y poser). */
@@ -110,6 +135,8 @@ export type PlacementOptions = {
 export type PlaceArgs = {
   input: WeekInput;
   fixed: FixedItem[];
+  /** Plan précédent (replanification) : le solveur y reprend ce qu'on ne lui a pas demandé de changer. */
+  previous?: PlanSession[];
 };
 
 /**
@@ -125,7 +152,7 @@ export async function placeWeek(
 ): Promise<OptimizeResult> {
   const cfg = applyOverrides(baseCfg, args.input);
   const fixed = [...args.fixed, ...indispoAsFixed(cfg, args.input)];
-  return solveWeekBest(cfg, { input: args.input, fixed }, opts);
+  return solveWeekBest(cfg, { input: args.input, fixed, previous: args.previous }, opts);
 }
 
 /* ------------------------------ Retouche ------------------------------ */
@@ -275,13 +302,13 @@ MODIFICATION DEMANDÉE :
 
 Renvoie les opérations minimales.`;
 
-  const model = opts.model || MODELS.planner;
   let attempts = 0;
   const call = async (userContent: string): Promise<JosianeRetouchOut> => {
     attempts++;
     return callJson(JosianeRetouchOutSchema, {
       agent: "josiane-retouche",
-      model,
+      role: "planner",
+      model: opts.model,
       system,
       user: userContent,
       chat: opts.chat,
@@ -376,7 +403,8 @@ Renvoie le patch minimal.`;
 
   const patch = await callJson(ReplanPatchSchema, {
     agent: "replanification",
-    model: opts.model || MODELS.planner,
+    role: "planner",
+    model: opts.model,
     system,
     user,
     chat: opts.chat,

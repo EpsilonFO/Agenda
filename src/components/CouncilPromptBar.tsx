@@ -3,6 +3,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import MicButton from "@/components/MicButton";
 import { useDictationField } from "@/lib/useDictationField";
+import { useAutoGrow } from "@/lib/useAutoGrow";
 import { AgentChat as AgentChatState } from "@/lib/useAgentChat";
 import type { ChatMode } from "@/lib/agents";
 
@@ -20,6 +21,7 @@ interface Props {
 export default function CouncilPromptBar({ chat, open, onClose }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mic = useDictationField(chat.setInput);
+  useAutoGrow(textareaRef, mic.preview(chat.input));
   // Mode à rétablir si la séance est abandonnée sans être lancée.
   const fallbackModeRef = useRef<ChatMode>("josiane");
 
@@ -122,7 +124,7 @@ export default function CouncilPromptBar({ chat, open, onClose }: Props) {
             }}
             rows={2}
             placeholder="Ex : 10h Delos, TP jeudi, salle 3×, soirée Marine samedi…"
-            className="max-h-56 flex-1 resize-none border-0 bg-transparent py-2 text-lg text-ink outline-none placeholder:text-ink-faint"
+            className="max-h-56 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-2 text-lg text-ink outline-none placeholder:text-ink-faint"
           />
           <button
             onClick={submit}

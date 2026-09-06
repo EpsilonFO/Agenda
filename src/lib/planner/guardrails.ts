@@ -139,6 +139,8 @@ export type RequestedSortie = { label: string; day?: string | null };
 
 /** Imprévu/TP demandé — posé tôt dans la semaine, avec marge avant l'échéance. */
 export type ImprevuRequest = { label: string; deadline?: string | null };
+/** Un rendez-vous à heure fixe demandé pour la semaine (voir checkEngagements). */
+export type EngagementRequest = { label: string; day: string; start: string };
 
 type Ctx = {
   cfg: LifeConfig;
@@ -147,8 +149,18 @@ type Ctx = {
   items: Item[];
   days: Map<string, Item[]>;
   requestedSorties: RequestedSortie[];
+  engagements: EngagementRequest[];
   out: Violation[];
 };
+
+/** Ce bloc est-il un rendez-vous à heure fixe demandé (et non du travail) ? */
+function isEngagement(ctx: Ctx, s: PlanSession): boolean {
+  const t = normText(s.title);
+  return ctx.engagements.some((en) => {
+    const label = normText(en.label);
+    return t.includes(label) || label.includes(t);
+  });
+}
 
 function normText(s: string): string {
   return s
@@ -307,8 +319,12 @@ function checkTravel(ctx: Ctx): void {
           if (t) {
             const spanS = minOfDay(anchor.end);
             const spanE = minOfDay(next.start);
+            // Les blocs intercalés sont ceux qui vivent DANS le battement,
+            // donc j+1..i-1 : `next` commence à la fin du span, sa propre durée
+            // n'a rien à y faire. L'inclure gonflait l'exigence de la durée du
+            // bloc suivant (miroir exact de busyBetween() côté solveur).
             let busy = 0;
-            for (let k = j + 1; k <= i; k++) busy += durationMin(items[k]);
+            for (let k = j + 1; k < i; k++) busy += durationMin(items[k]);
             let need = t.minutes + busy;
             const chainParts = [`${t.minutes} min de trajet en ${t.mode}`, `${busy} min de blocs sans lieu intercalés`];
             if (!lunchTaken && overlapMin(spanS, spanE, MIDDAY.start, MIDDAY.end) > 0) {
@@ -339,6 +355,9 @@ function checkWorkBlocks(ctx: Ctx): void {
   for (const s of ctx.sessions) {
     if (s.category !== "delos" && s.category !== "monumia" && s.category !== "autre")
       continue;
+    // Un rendez-vous n'est pas un bloc de travail : une inscription de 15 min
+    // est exactement ce qui a été demandé, pas un créneau trop court.
+    if (isEngagement(ctx, s)) continue;
     const dur = durationMin(s);
     if (dur < min) {
       push(
@@ -891,6 +910,44 @@ function checkImprevus(ctx: Ctx, imprevus: ImprevuRequest[]): void {
   }
 }
 
+/**
+ * engagement-place : un rendez-vous à heure FIXE (inscription, rdv médecin,
+ * appel) doit être posé le bon jour à la bonne heure. C'est la règle qui
+ * manquait : sans elle, un rendez-vous mal traduit se retrouvait un autre jour
+ * et rien ne le signalait — ni au solveur, ni à l'utilisateur.
+ */
+function checkEngagements(ctx: Ctx): void {
+  for (const en of ctx.engagements) {
+    const label = normText(en.label);
+    const blocks = ctx.sessions.filter(
+      (s) => normText(s.title).includes(label) || label.includes(normText(s.title))
+    );
+    if (blocks.length === 0) {
+      push(
+        ctx,
+        "engagement-place",
+        "error",
+        `Le rendez-vous « ${en.label} » (${en.day} à ${en.start}) n'est posé nulle part.`
+      );
+      continue;
+    }
+    const onTime = blocks.some(
+      (s) => dayKey(s.start) === en.day && s.start.slice(11, 16) === en.start
+    );
+    if (!onTime) {
+      push(
+        ctx,
+        "engagement-place",
+        "error",
+        `Le rendez-vous « ${en.label} » est demandé le ${en.day} à ${en.start} mais posé ${blocks
+          .map((s) => fmt(s.start))
+          .join(", ")} — un rendez-vous ne se déplace pas.`,
+        blocks.map((s) => s.id)
+      );
+    }
+  }
+}
+
 /* ------------------------------ Entrée ------------------------------- */
 
 /**
@@ -898,12 +955,17 @@ function checkImprevus(ctx: Ctx, imprevus: ImprevuRequest[]): void {
  * l'agenda pour la même semaine (cours, rdv manuels). `opts.requestedSorties`
  * = les sorties explicitement demandées cette semaine (obligatoires).
  * `opts.imprevus` = les TP/imprévus demandés (blocs « autre » attendus tôt).
+ * `opts.engagements` = les rendez-vous à heure fixe (posés à l'heure dite).
  */
 export function checkWeekPlan(
   cfg: LifeConfig,
   sessions: PlanSession[],
   fixed: FixedItem[],
-  opts?: { requestedSorties?: RequestedSortie[]; imprevus?: ImprevuRequest[] }
+  opts?: {
+    requestedSorties?: RequestedSortie[];
+    imprevus?: ImprevuRequest[];
+    engagements?: EngagementRequest[];
+  }
 ): Violation[] {
   // Les trajets sont des blocs d'AFFICHAGE dérivés (générés après le verdict) :
   // ni lieu, ni quota — ils ne sont pas soumis aux règles. On les écarte pour
@@ -917,6 +979,7 @@ export function checkWeekPlan(
     items,
     days: byDay(items),
     requestedSorties: opts?.requestedSorties ?? [],
+    engagements: opts?.engagements ?? [],
     out: [],
   };
 
@@ -935,6 +998,7 @@ export function checkWeekPlan(
   checkSorties(ctx);
   checkRequestedSorties(ctx);
   checkImprevus(ctx, opts?.imprevus ?? []);
+  checkEngagements(ctx);
 
   // Les erreurs d'abord (pour la boucle de réparation), puis les warns.
   return ctx.out.sort((a, b) =>

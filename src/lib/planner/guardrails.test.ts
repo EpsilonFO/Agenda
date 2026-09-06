@@ -142,6 +142,28 @@ describe("trajets & clusters", () => {
     expect(found).toHaveLength(1);
   });
 
+  it("à travers un bloc sans lieu : seul l'INTERCALÉ compte, pas le bloc d'arrivée", () => {
+    // Cours à la fac jusqu'à 12h, rdv de 15 min sans lieu à 13h, puis un bloc
+    // à la maison (Paris) à 13h15 : 75 min de battement pour 35 min de voiture
+    // + 15 min de rdv intercalé = 50 min requises → ça passe. L'exigence
+    // incluait à tort la durée du bloc d'ARRIVÉE (75 min de plus), ce qui
+    // rendait la semaine infaisable dès qu'un rendez-vous court s'intercalait.
+    const fixed = [fx(D.lundi, "09:00", "12:00", "fac")];
+    const ok = [
+      s(D.lundi, "13:00", "13:15", "autre", { title: "Inscription SUAPS" }),
+      s(D.lundi, "13:15", "14:15", "repas", { placeId: "maison" }),
+    ];
+    expect(rules(ok, fixed)).not.toContain("travel-time");
+
+    // Mais un bloc sans lieu qui mange VRAIMENT le temps de route reste fautif :
+    // 60 min de course intercalée ne laissent que 15 min pour 35 min de voiture.
+    const trop = [
+      s(D.lundi, "12:00", "13:00", "sport", { title: "Course" }),
+      s(D.lundi, "13:15", "14:15", "repas", { placeId: "maison" }),
+    ];
+    expect(rules(trop, fixed)).toContain("travel-time");
+  });
+
   it("trajet inter-zones sur le midi : il faut trajet + déjeuner", () => {
     // Delos finit à 13h, cours fixe à la fac (Orsay) à 14h30 : 90 min de pause,
     // mais il faut 70 (transports) + 30 (déjeuner) = 100 → violation.
