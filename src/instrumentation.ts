@@ -22,6 +22,15 @@ export async function register() {
     const { describeConfig } = await import("./lib/llm");
     console.log(`[llm] ${describeConfig()}`);
 
+    // Sans SESSION_SECRET, aucune session ne peut être vérifiée : le site est
+    // fermé à tout le monde. Ça doit se lire au boot, pas se deviner depuis
+    // une redirection vers le login qui boucle.
+    if (!process.env.SESSION_SECRET?.trim() && process.env.AUTH_DISABLED !== "true") {
+      console.error(
+        "[auth] ⚠️ SESSION_SECRET absente : impossible de vérifier une session, personne ne pourra se connecter. Renseigne-la dans .env.local (openssl rand -hex 32) et relance."
+      );
+    }
+
     const { runReminders } = await import("./lib/reminders");
     const { runGoogleSync } = await import("./lib/google/sync");
     const { googleConfigured, syncIntervalMs } = await import("./lib/google/config");

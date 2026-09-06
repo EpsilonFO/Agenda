@@ -77,6 +77,11 @@ export async function verifySession(
   secret: string
 ): Promise<Payload | null> {
   if (!token) return null;
+  // Secret absent : personne ne peut être connecté — on refuse, on ne plante
+  // pas. Vécu en prod : un .env.local perdu sur le VPS et WebCrypto jetait
+  // « Zero-length key is not supported » depuis le middleware, soit une 500
+  // opaque sur TOUTES les pages au lieu d'une redirection vers le login.
+  if (!secret) return null;
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
   const expected = await hmac(body, secret);
