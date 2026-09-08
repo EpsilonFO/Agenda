@@ -52,6 +52,43 @@ function eventHeight({ startMin, endMin }: { startMin: number; endMin: number })
 const TIME_MIN_PX = 44;
 const LOCATION_MIN_PX = 60;
 
+/** Sous cette largeur de colonne, un titre courant ne tient plus sur une ligne :
+ *  on bascule en rendu « mobile » façon Google Agenda — titre replié sur
+ *  plusieurs lignes, aligné en haut à gauche, marges réduites au minimum. */
+const COMPACT_COL_PX = 130;
+
+/** Largeur de la colonne des heures selon le rendu. */
+const GUTTER_COMPACT_PX = 42;
+const GUTTER_WIDE_PX = 52;
+const GUTTER_FEW_DAYS_PX = 60;
+
+/** En compact, l'heure n'est affichée que si le bloc est assez large pour elle
+ *  (sur un téléphone en vue 7 jours, le titre prend toute la place). */
+const COMPACT_TIME_MIN_PX = 88;
+
+/** Hauteur en dessous de laquelle un bloc compact ne tient qu'une ligne. */
+const COMPACT_TWO_LINES_PX = 27;
+
+/** Coupure des mots trop longs pour la colonne (« statistiques »). */
+const WRAP_ANYWHERE: React.CSSProperties = {
+  overflowWrap: "anywhere",
+  wordBreak: "break-word",
+};
+
+/** Hauteur à partir de laquelle un bloc large peut donner deux lignes au titre
+ *  (deux lignes + heure + lieu, sans rogner le reste). */
+const WIDE_TWO_LINES_PX = 60;
+
+/** Titre sur deux lignes en rendu large : on coupe aux espaces, pas au milieu
+ *  des mots — la colonne est assez large pour ça. */
+const CLAMP_TWO_LINES: React.CSSProperties = {
+  display: "-webkit-box",
+  WebkitBoxOrient: "vertical",
+  WebkitLineClamp: 2,
+  overflow: "hidden",
+  overflowWrap: "break-word",
+};
+
 /** Positionnement d'événements qui se chevauchent en colonnes côte à côte.
  *  Seuls les événements qui se chevauchent réellement sont réduits. */
 function computeOverlapLayout(
@@ -207,8 +244,23 @@ export default function Calendar({
     return () => clearInterval(t);
   }, []);
 
-  const gutter = days.length >= 7 ? 52 : 60;
+  // Largeur utile de la grille : elle décide du rendu (large ou compact).
+  const [gridW, setGridW] = useState(0);
+  // Décision prise sur une gouttière de référence : le rendu choisi ne doit pas
+  // changer la largeur qui sert à le choisir (sinon la vue oscille).
+  const refColWidth = gridW > 0 ? (gridW - GUTTER_WIDE_PX) / days.length : 0;
+  const compact = refColWidth > 0 && refColWidth < COMPACT_COL_PX;
+  // En compact, la colonne des heures est rognée : chaque pixel rendu aux
+  // colonnes de jours, c'est un caractère de plus par ligne de titre.
+  const gutter = compact
+    ? GUTTER_COMPACT_PX
+    : days.length >= 7
+      ? GUTTER_WIDE_PX
+      : GUTTER_FEW_DAYS_PX;
+  const colWidth = gridW > 0 ? (gridW - gutter) / days.length : 0;
   const gridCols = `${gutter}px repeat(${days.length}, minmax(0, 1fr))`;
+  // Gouttière entre deux événements voisins (et sur les bords de colonne).
+  const eventInset = compact ? 1 : 6;
 
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const nowVisible = nowMin >= DAY_START * 60 && nowMin <= DAY_END * 60;
@@ -229,6 +281,8 @@ export default function Calendar({
     const measure = () => {
       const w = el.offsetWidth - el.clientWidth;
       setScrollbarW((prev) => (prev === w ? prev : w));
+      const inner = el.clientWidth;
+      setGridW((prev) => (prev === inner ? prev : inner));
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -442,8 +496,12 @@ export default function Calendar({
           <div className="border-r border-line">
             {hours.map((h) => (
               <div key={h} style={{ height: HOUR_PX }} className="relative">
-                <span className="absolute -top-[7px] right-2 text-[11px] font-medium tabular-nums text-ink-faint">
-                  {h}:00
+                <span
+                  className={`absolute -top-[7px] text-[11px] font-medium tabular-nums text-ink-faint ${
+                    compact ? "right-1" : "right-2"
+                  }`}
+                >
+                  {String(h).padStart(2, "0")}:00
                 </span>
               </div>
             ))}
@@ -535,16 +593,20 @@ export default function Calendar({
                   if (drag && drag.id === ev.id && drag.moved) return null;
                   const bounds = eventBounds(ev);
                   const heightPx = eventHeight(bounds);
-                  const showTime = heightPx >= TIME_MIN_PX;
-                  const showLocation = heightPx >= LOCATION_MIN_PX;
+                  const showTime = !compact && heightPx >= TIME_MIN_PX;
                   const layout = overlapLayout.get(ev.id);
                   const stacked = layout !== null && layout !== undefined;
-                  const overlapStyle: React.CSSProperties = stacked
+                  const insetStyle: React.CSSProperties = stacked
                     ? {
-                        left: `calc(${(layout!.column / layout!.total) * 100}% + 4px)`,
-                        right: `calc(${((layout!.total - layout!.column - 1) / layout!.total) * 100}% + 4px)`,
+                        left: `calc(${(layout!.column / layout!.total) * 100}% + ${eventInset}px)`,
+                        right: `calc(${((layout!.total - layout!.column - 1) / layout!.total) * 100}% + ${eventInset}px)`,
                       }
-                    : {};
+                    : { left: eventInset, right: eventInset };
+                  // Largeur réelle du bloc : en compact, elle décide si l'heure
+                  // tient à côté du titre.
+                  const blockWidth =
+                    (stacked ? colWidth / layout!.total : colWidth) -
+                    2 * eventInset;
                   return (
                     <div
                       key={ev.id}
@@ -559,47 +621,47 @@ export default function Calendar({
                       }
                       style={{
                         ...eventStyle(ev),
-                        ...overlapStyle,
-                        backgroundColor: blend(color, EVENT_BASE, 0.28),
+                        ...insetStyle,
+                        backgroundColor: blend(color, EVENT_BASE, compact ? 0.34 : 0.28),
                         borderColor: blend(color, EVENT_BASE, 0.55),
                         touchAction: "none",
                       }}
-                      className={`animate-fade-in group absolute left-1.5 right-1.5 z-10 flex cursor-grab flex-col items-center justify-center overflow-hidden rounded-xl border pl-2.5 text-center shadow-soft transition-all duration-200 hover:-translate-y-px hover:shadow-lift active:cursor-grabbing ${
-                        showTime ? "p-1.5 pl-2.5" : "p-1 pl-2.5"
-                      } ${pending ? "border-dashed" : ""}`}
+                      className={
+                        compact
+                          ? `animate-fade-in group absolute z-10 flex cursor-grab flex-col items-stretch justify-start overflow-hidden rounded-md border px-0.5 py-px text-left shadow-soft active:cursor-grabbing ${
+                              pending ? "border-dashed" : ""
+                            }`
+                          : `animate-fade-in group absolute z-10 flex cursor-grab flex-col items-center justify-center overflow-hidden rounded-xl border pl-2.5 text-center shadow-soft transition-all duration-200 hover:-translate-y-px hover:shadow-lift active:cursor-grabbing ${
+                              showTime ? "p-1.5 pl-2.5" : "p-1 pl-2.5"
+                            } ${pending ? "border-dashed" : ""}`
+                      }
                       title={pending ? "Invitation en attente de ta réponse" : undefined}
                     >
-                      <span
-                        className="absolute inset-y-1.5 left-1 w-1 rounded-full"
-                        style={{ backgroundColor: color }}
-                      />
-                      {/* Pastille : événement venu de Google Calendar */}
-                      {ev.source === "google" && (
+                      {/* Liseré de couleur et pastille Google : en compact, chaque
+                          pixel horizontal compte, le fond porte déjà la couleur. */}
+                      {!compact && (
+                        <span
+                          className="absolute inset-y-1.5 left-1 w-1 rounded-full"
+                          style={{ backgroundColor: color }}
+                        />
+                      )}
+                      {!compact && ev.source === "google" && (
                         <span
                           aria-hidden
                           className="pointer-events-none absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full ring-1 ring-white/50"
                           style={{ backgroundColor: pending ? "transparent" : color }}
                         />
                       )}
-                      {/* Trop court pour deux lignes : le titre prime sur l'heure. */}
-                      <div
-                        className={`w-full truncate font-semibold text-ink ${
-                          showTime ? "text-xs" : "text-[11px] leading-tight"
-                        }`}
-                      >
-                        {ev.title}
-                      </div>
-                      {showTime && (
-                        <div className="truncate text-[10.5px] font-medium tabular-nums text-ink-soft">
-                          {formatTime(parseIso(ev.start))} –{" "}
-                          {formatTime(parseIso(ev.end))}
-                        </div>
-                      )}
-                      {ev.location && showLocation && (
-                        <div className="truncate text-[10px] font-medium text-ink-faint">
-                          {ev.location}
-                        </div>
-                      )}
+                      <EventContent
+                        title={ev.title}
+                        location={ev.location}
+                        timeLabel={`${formatTime(parseIso(ev.start))} – ${formatTime(
+                          parseIso(ev.end)
+                        )}`}
+                        heightPx={heightPx}
+                        widthPx={blockWidth}
+                        compact={compact}
+                      />
                       {/* Poignée de redimensionnement (haut) */}
                       <span
                         onPointerDown={(e) =>
@@ -630,58 +692,147 @@ export default function Calendar({
             pour animer les changements de colonne) */}
         {drag && dragEvent && (
           <div
-            className={`pointer-events-none absolute z-30 overflow-hidden rounded-xl border border-dashed pl-2.5 transition-transform duration-150 ease-out ${
-              eventHeight(drag) >= TIME_MIN_PX ? "p-1.5 pl-2.5" : "p-1 pl-2.5"
-            }`}
+            className={
+              compact
+                ? "pointer-events-none absolute z-30 overflow-hidden rounded-md border border-dashed px-0.5 py-px transition-transform duration-150 ease-out"
+                : `pointer-events-none absolute z-30 overflow-hidden rounded-xl border border-dashed pl-2.5 transition-transform duration-150 ease-out ${
+                    eventHeight(drag) >= TIME_MIN_PX ? "p-1.5 pl-2.5" : "p-1 pl-2.5"
+                  }`
+            }
             style={{
               top: `${((drag.startMin - DAY_START * 60) / 60) * HOUR_PX + 1}px`,
               height: `${eventHeight(drag)}px`,
-              left: `${gutter + 6}px`,
-              width: `${Math.max(0, drag.colWidth - 12)}px`,
+              left: `${gutter + eventInset}px`,
+              width: `${Math.max(0, drag.colWidth - 2 * eventInset)}px`,
               transform: `translateX(${drag.dayIndex * drag.colWidth}px)`,
               backgroundColor: blend(dragEvent.color || "#2dd4bf", EVENT_BASE, 0.22),
               borderColor: dragEvent.color || "#2dd4bf",
             }}
           >
-            <span
-              className="absolute inset-y-1.5 left-1 w-1 rounded-full"
-              style={{ backgroundColor: dragEvent.color || "#2dd4bf" }}
-            />
-            <div className="flex h-full flex-col items-center justify-center">
-              <div
-                className={`w-full truncate text-center font-semibold text-ink ${
-                  eventHeight(drag) >= TIME_MIN_PX ? "text-xs" : "text-[11px] leading-tight"
-                }`}
-              >
-                {dragEvent.title}
-              </div>
-              {eventHeight(drag) >= TIME_MIN_PX && (
-                <div className="truncate text-[10.5px] font-medium tabular-nums text-ink-soft">
-                  {formatTime(
-                    new Date(
-                      new Date(days[drag.dayIndex]).setHours(0, drag.startMin, 0, 0)
-                    )
-                  )}{" "}
-                  –{" "}
-                  {drag.endMin >= DAY_END * 60
+            {!compact && (
+              <span
+                className="absolute inset-y-1.5 left-1 w-1 rounded-full"
+                style={{ backgroundColor: dragEvent.color || "#2dd4bf" }}
+              />
+            )}
+            <div
+              className={`flex h-full flex-col ${
+                compact
+                  ? "items-stretch justify-start text-left"
+                  : "items-center justify-center"
+              }`}
+            >
+              <EventContent
+                title={dragEvent.title}
+                location={dragEvent.location}
+                timeLabel={`${formatTime(
+                  new Date(
+                    new Date(days[drag.dayIndex]).setHours(0, drag.startMin, 0, 0)
+                  )
+                )} – ${
+                  drag.endMin >= DAY_END * 60
                     ? "00:00"
                     : formatTime(
                         new Date(
                           new Date(days[drag.dayIndex]).setHours(0, drag.endMin, 0, 0)
                         )
-                      )}
-                </div>
-              )}
-              {dragEvent.location && eventHeight(drag) >= LOCATION_MIN_PX && (
-                <div className="truncate text-[10px] font-medium text-ink-faint">
-                  {dragEvent.location}
-                </div>
-              )}
+                      )
+                }`}
+                heightPx={eventHeight(drag)}
+                widthPx={drag.colWidth - 2 * eventInset}
+                compact={compact}
+              />
             </div>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+/** Contenu d'un bloc d'événement.
+ *  - large : titre sur une ligne, centré, heure et lieu si la hauteur le permet ;
+ *  - compact (téléphone) : titre replié sur plusieurs lignes en haut à gauche,
+ *    lieu dans les lignes restantes, heure abandonnée — c'est le titre qui doit
+ *    rester lisible, comme dans la vue semaine de Google Agenda. */
+function EventContent({
+  title,
+  location,
+  timeLabel,
+  heightPx,
+  widthPx,
+  compact,
+}: {
+  title: string;
+  location?: string;
+  timeLabel: string;
+  heightPx: number;
+  widthPx: number;
+  compact: boolean;
+}) {
+  if (compact) {
+    // Trop court pour deux lignes : une seule ligne tronquée vaut mieux qu'une
+    // deuxième coupée en son milieu.
+    const oneLine = heightPx < COMPACT_TWO_LINES_PX;
+    // L'heure ne passe qu'en colonne large : sur un téléphone en vue 7 jours,
+    // c'est le titre qui doit rester lisible.
+    const withTime =
+      !oneLine && widthPx >= COMPACT_TIME_MIN_PX && heightPx >= TIME_MIN_PX;
+    // Sinon, pas de mesure du texte : le titre prend les lignes qu'il lui faut,
+    // le lieu occupe ce qui reste et le bloc rogne le débordement (comme Google).
+    return (
+      <>
+        <div
+          className={`w-full shrink-0 text-[11px] font-semibold leading-[1.15] text-ink ${
+            oneLine ? "truncate" : ""
+          }`}
+          style={oneLine ? undefined : WRAP_ANYWHERE}
+        >
+          {title}
+        </div>
+        {withTime && (
+          <div className="w-full shrink-0 truncate text-[10px] font-medium tabular-nums text-ink-soft">
+            {timeLabel}
+          </div>
+        )}
+        {location && (
+          <div
+            className="min-h-0 w-full overflow-hidden text-[10px] font-medium leading-[1.15] text-ink-faint"
+            style={WRAP_ANYWHERE}
+          >
+            {location}
+          </div>
+        )}
+      </>
+    );
+  }
+  const showTime = heightPx >= TIME_MIN_PX;
+  const showLocation = heightPx >= LOCATION_MIN_PX;
+  // Assez haut pour un titre sur deux lignes : mieux vaut le replier que le
+  // couper à « Cours de stat… ».
+  const twoLines = heightPx >= WIDE_TWO_LINES_PX;
+  return (
+    <>
+      {/* Trop court pour deux lignes : le titre prime sur l'heure. */}
+      <div
+        className={`w-full text-center font-semibold text-ink ${
+          showTime ? "text-xs" : "text-[11px] leading-tight"
+        } ${twoLines ? "" : "truncate"}`}
+        style={twoLines ? CLAMP_TWO_LINES : undefined}
+      >
+        {title}
+      </div>
+      {showTime && (
+        <div className="truncate text-[10.5px] font-medium tabular-nums text-ink-soft">
+          {timeLabel}
+        </div>
+      )}
+      {location && showLocation && (
+        <div className="truncate text-[10px] font-medium text-ink-faint">
+          {location}
+        </div>
+      )}
+    </>
   );
 }
 
