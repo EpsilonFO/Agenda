@@ -219,6 +219,22 @@ export default function Calendar({
   const gridRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragSession | null>(null);
 
+  /**
+   * ARMEMENT TACTILE : au doigt, un événement ne se déplace qu'une fois
+   * sélectionné par une première touche.
+   *
+   * Sans ça, un défilement vertical qui démarrait sur un bloc le déplaçait —
+   * `touch-action: none` et le `preventDefault()` du pointerdown prenaient la
+   * main avant que le navigateur ne puisse faire défiler. Insupportable dès
+   * qu'on parcourt sa semaine au pouce.
+   *
+   * À la souris, rien ne change : on saisit et on déplace directement. C'est
+   * `pointerType` qui tranche, pas la taille de l'écran — un portable tactile
+   * garde donc le geste direct dès qu'on utilise la souris.
+   */
+  const [armedId, setArmedId] = useState<string | null>(null);
+  const pointerTypeRef = useRef<string>("mouse");
+
   // La grille défile, pas l'en-tête : sans compensation, la barre de défilement
   // rétrécit les colonnes du corps et les traits ne tombent plus en face de ceux
   // des numéros de jour. On mesure sa largeur et on la réserve dans l'en-tête.
@@ -334,6 +350,8 @@ export default function Calendar({
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
     dragRef.current = null;
+    // Un déplacement effectué désarme : le suivant redemandera une touche.
+    if (s?.moved) setArmedId(null);
     if (s?.moved) {
       setDrag((d) => {
         if (d) {
@@ -367,6 +385,11 @@ export default function Calendar({
     mode: DragMode
   ) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
+    pointerTypeRef.current = e.pointerType;
+    // Au doigt et pas encore armé : on ne saisit RIEN et on ne bloque rien —
+    // le navigateur fait défiler normalement. Le clic qui suivra (si le doigt
+    // n'a pas bougé) armera l'événement.
+    if (e.pointerType !== "mouse" && armedId !== ev.id) return;
     e.preventDefault();
     e.stopPropagation();
     const { rect, top, height } = eventGeo(ev, colEl);
@@ -436,7 +459,11 @@ export default function Calendar({
       </div>
 
       {/* Grille horaire */}
-      <div ref={gridRef} className="relative flex-1 overflow-y-auto">
+      <div
+        ref={gridRef}
+        onScroll={() => setArmedId((id) => (id === null ? id : null))}
+        className="relative flex-1 overflow-y-auto"
+      >
         <div className="grid" style={{ gridTemplateColumns: gridCols }}>
           {/* Colonne des heures */}
           <div className="border-r border-line">
@@ -496,6 +523,7 @@ export default function Calendar({
                           isHourLine ? "border-line/70" : "border-transparent"
                         }`}
                         onClick={() => {
+                          setArmedId(null);
                           const start = new Date(day);
                           start.setHours(0, min, 0, 0);
                           onSlotClick(start);
@@ -537,6 +565,7 @@ export default function Calendar({
                   const heightPx = eventHeight(bounds);
                   const showTime = heightPx >= TIME_MIN_PX;
                   const showLocation = heightPx >= LOCATION_MIN_PX;
+                  const armed = armedId === ev.id;
                   const layout = overlapLayout.get(ev.id);
                   const stacked = layout !== null && layout !== undefined;
                   const overlapStyle: React.CSSProperties = stacked
@@ -552,6 +581,13 @@ export default function Calendar({
                       tabIndex={0}
                       onClick={(e) => {
                         e.stopPropagation();
+                        // Au doigt, la première touche ne fait qu'ARMER (elle
+                        // sélectionne) ; la suivante ouvre la fiche.
+                        if (pointerTypeRef.current !== "mouse" && !armed) {
+                          setArmedId(ev.id);
+                          return;
+                        }
+                        setArmedId(null);
                         onEventClick(ev);
                       }}
                       onPointerDown={(e) =>
@@ -562,11 +598,15 @@ export default function Calendar({
                         ...overlapStyle,
                         backgroundColor: blend(color, EVENT_BASE, 0.28),
                         borderColor: blend(color, EVENT_BASE, 0.55),
-                        touchAction: "none",
+                        // Non armé : `pan-y` rend le défilement au navigateur.
+                        // Armé : on prend la main sur le geste.
+                        touchAction: armed ? "none" : "pan-y",
                       }}
                       className={`animate-fade-in group absolute left-1.5 right-1.5 z-10 flex cursor-grab flex-col items-center justify-center overflow-hidden rounded-xl border pl-2.5 text-center shadow-soft transition-all duration-200 hover:-translate-y-px hover:shadow-lift active:cursor-grabbing ${
                         showTime ? "p-1.5 pl-2.5" : "p-1 pl-2.5"
-                      } ${pending ? "border-dashed" : ""}`}
+                      } ${pending ? "border-dashed" : ""} ${
+                        armed ? "z-20 shadow-lift ring-2 ring-brand/80" : ""
+                      }`}
                       title={pending ? "Invitation en attente de ta réponse" : undefined}
                     >
                       <span
@@ -605,7 +645,9 @@ export default function Calendar({
                         onPointerDown={(e) =>
                           beginDrag(ev, e.currentTarget.parentElement?.parentElement as HTMLDivElement, dayIndex, e, "resize-start")
                         }
-                        className="absolute inset-x-0 top-0 h-2 cursor-ns-resize opacity-0 transition-opacity group-hover:opacity-100"
+                        className={`absolute inset-x-0 top-0 cursor-ns-resize transition-opacity group-hover:opacity-100 ${
+                          armed ? "h-3 opacity-100" : "h-2 opacity-0"
+                        }`}
                       >
                         <span className="absolute top-[3px] left-1/2 h-[3px] w-8 -translate-x-1/2 rounded-full bg-white/30" />
                       </span>
@@ -614,7 +656,9 @@ export default function Calendar({
                         onPointerDown={(e) =>
                           beginDrag(ev, e.currentTarget.parentElement?.parentElement as HTMLDivElement, dayIndex, e, "resize-end")
                         }
-                        className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize opacity-0 transition-opacity group-hover:opacity-100"
+                        className={`absolute inset-x-0 bottom-0 cursor-ns-resize transition-opacity group-hover:opacity-100 ${
+                          armed ? "h-3 opacity-100" : "h-2 opacity-0"
+                        }`}
                       >
                         <span className="absolute bottom-[3px] left-1/2 h-[3px] w-8 -translate-x-1/2 rounded-full bg-white/30" />
                       </span>
