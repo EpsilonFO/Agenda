@@ -52,6 +52,13 @@ function eventHeight({ startMin, endMin }: { startMin: number; endMin: number })
 const TIME_MIN_PX = 44;
 const LOCATION_MIN_PX = 60;
 
+/** Hauteur en dessous de laquelle un événement ARMÉ ne montre pas ses poignées
+ *  de redimensionnement : deux poignées de 12 px sur un bloc au plancher de
+ *  24 px (un quart d'heure) ne laissent plus un pixel pour le DÉPLACER — et
+ *  c'est le déplacement qu'on vient d'armer. Au doigt, on redimensionne un
+ *  quart d'heure depuis la fiche, pas en tirant sur 12 px. */
+const ARMED_RESIZE_MIN_PX = 48;
+
 /** Sous cette largeur de colonne, un titre courant ne tient plus sur une ligne :
  *  on bascule en rendu « mobile » façon Google Agenda — titre replié sur
  *  plusieurs lignes, aligné en haut à gauche, marges réduites au minimum. */
@@ -404,9 +411,9 @@ export default function Calendar({
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
     dragRef.current = null;
-    // Un déplacement effectué désarme : le suivant redemandera une touche.
-    if (s?.moved) setArmedId(null);
     if (s?.moved) {
+      // Un déplacement effectué désarme : le suivant redemandera une touche.
+      setArmedId(null);
       setDrag((d) => {
         if (d) {
           const day = days[d.dayIndex] ?? days[s.startDayIndex];
@@ -623,6 +630,9 @@ export default function Calendar({
                   const heightPx = eventHeight(bounds);
                   const showTime = !compact && heightPx >= TIME_MIN_PX;
                   const armed = armedId === ev.id;
+                  // `armed` n'arrive que par une touche (la souris n'arme
+                  // jamais) : ce seuil ne concerne donc que le tactile.
+                  const showHandles = !armed || heightPx >= ARMED_RESIZE_MIN_PX;
                   const layout = overlapLayout.get(ev.id);
                   const stacked = layout !== null && layout !== undefined;
                   const insetStyle: React.CSSProperties = stacked
@@ -700,28 +710,32 @@ export default function Calendar({
                         widthPx={blockWidth}
                         compact={compact}
                       />
-                      {/* Poignée de redimensionnement (haut) */}
-                      <span
-                        onPointerDown={(e) =>
-                          beginDrag(ev, e.currentTarget.parentElement?.parentElement as HTMLDivElement, dayIndex, e, "resize-start")
-                        }
-                        className={`absolute inset-x-0 top-0 cursor-ns-resize transition-opacity group-hover:opacity-100 ${
-                          armed ? "h-3 opacity-100" : "h-2 opacity-0"
-                        }`}
-                      >
-                        <span className="absolute top-[3px] left-1/2 h-[3px] w-8 -translate-x-1/2 rounded-full bg-white/30" />
-                      </span>
-                      {/* Poignée de redimensionnement (bas) */}
-                      <span
-                        onPointerDown={(e) =>
-                          beginDrag(ev, e.currentTarget.parentElement?.parentElement as HTMLDivElement, dayIndex, e, "resize-end")
-                        }
-                        className={`absolute inset-x-0 bottom-0 cursor-ns-resize transition-opacity group-hover:opacity-100 ${
-                          armed ? "h-3 opacity-100" : "h-2 opacity-0"
-                        }`}
-                      >
-                        <span className="absolute bottom-[3px] left-1/2 h-[3px] w-8 -translate-x-1/2 rounded-full bg-white/30" />
-                      </span>
+                      {/* Poignées de redimensionnement — révélées au survol à la
+                          souris, et en permanence sur un événement armé. */}
+                      {showHandles && (
+                        <>
+                          <span
+                            onPointerDown={(e) =>
+                              beginDrag(ev, e.currentTarget.parentElement?.parentElement as HTMLDivElement, dayIndex, e, "resize-start")
+                            }
+                            className={`absolute inset-x-0 top-0 cursor-ns-resize transition-opacity group-hover:opacity-100 ${
+                              armed ? "h-3 opacity-100" : "h-2 opacity-0"
+                            }`}
+                          >
+                            <span className="absolute top-[3px] left-1/2 h-[3px] w-8 -translate-x-1/2 rounded-full bg-white/30" />
+                          </span>
+                          <span
+                            onPointerDown={(e) =>
+                              beginDrag(ev, e.currentTarget.parentElement?.parentElement as HTMLDivElement, dayIndex, e, "resize-end")
+                            }
+                            className={`absolute inset-x-0 bottom-0 cursor-ns-resize transition-opacity group-hover:opacity-100 ${
+                              armed ? "h-3 opacity-100" : "h-2 opacity-0"
+                            }`}
+                          >
+                            <span className="absolute bottom-[3px] left-1/2 h-[3px] w-8 -translate-x-1/2 rounded-full bg-white/30" />
+                          </span>
+                        </>
+                      )}
                     </div>
                   );
                 })}
