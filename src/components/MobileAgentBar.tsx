@@ -28,6 +28,10 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
     setOpen(true);
   }
 
+  // Sans réseau, les agents ne peuvent rien faire : la barre le dit et se
+  // désactive. L'agenda, lui, reste modifiable à la main juste au-dessus.
+  const offline = chat.offline;
+
   return (
     <>
       <ChatSheet
@@ -53,6 +57,12 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
             {micError}
           </p>
         )}
+        {offline && (
+          <p className="mb-2 px-1 text-[11px] font-medium text-amber-300">
+            Hors ligne — agents indisponibles. L&apos;agenda reste modifiable à
+            la main.
+          </p>
+        )}
         <div className="flex items-end gap-2">
           <MicButton
             onText={mic.onText}
@@ -71,12 +81,15 @@ export default function MobileAgentBar({ chat }: { chat: AgentChatState }) {
               }
             }}
             rows={1}
-            placeholder="Demander à l'agenda…"
-            className="field max-h-32 flex-1 resize-none overflow-y-auto"
+            disabled={offline}
+            placeholder={
+              offline ? "Agents indisponibles hors ligne" : "Demander à l'agenda…"
+            }
+            className="field max-h-32 flex-1 resize-none overflow-y-auto disabled:opacity-60"
           />
           <button
             onClick={submit}
-            disabled={chat.loading || !mic.preview(chat.input).trim()}
+            disabled={offline || chat.loading || !mic.preview(chat.input).trim()}
             className="btn-primary h-10 w-11 px-0 text-base"
             aria-label="Envoyer"
           >

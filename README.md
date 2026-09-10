@@ -33,6 +33,16 @@ choisissent avec une seule variable d'environnement (voir
   vrai temps réel, Chrome ou Safari.
 - **Barre de prompt** ancrée en bas de l'écran sur mobile, dépliable en une
   feuille de conversation.
+- **Hors ligne (PWA)** : dans le métro ou sans réseau, l'agenda s'ouvre et
+  s'affiche quand même — le service worker garde en cache la coquille de l'app
+  et la dernière liste d'événements. On peut **créer, déplacer, retoucher et
+  supprimer** : chaque modification est rangée dans une file d'attente sur le
+  téléphone, appliquée tout de suite à l'écran (petit point clignotant sur
+  l'événement), et poussée au serveur dès le retour du réseau — même après
+  avoir fermé l'app. Les **agents**, eux, tournent côté serveur : ils sont
+  désactivés hors ligne, avec le message qui va avec plutôt qu'une requête qui
+  meurt en silence. Une pastille dans l'en-tête indique l'état (hors ligne, N
+  en attente, synchronisation, échec) et propose de réessayer.
 - **Édition manuelle** : clique sur un créneau pour créer un événement, clique
   sur un événement pour le modifier ou le supprimer.
 - **Assistant IA** (chat) qui manipule l'agenda via *function calling* :
@@ -150,6 +160,7 @@ src/
 ├── components/
 │   ├── Calendar.tsx          # grille 1/3/7 jours + ligne "maintenant"
 │   ├── SegmentedControl.tsx  # sélecteur de vue (1J / 3J / 7J)
+│   ├── SyncStatus.tsx        # pastille hors ligne / file d'attente
 │   ├── EventModal.tsx        # création / édition
 │   ├── AgentChat.tsx         # chat (barre latérale bureau)
 │   ├── MobileAgentBar.tsx    # barre de prompt + feuille (mobile)
@@ -162,16 +173,55 @@ src/
     ├── agent.ts              # outils + orchestration de l'agent
     ├── dates.ts              # utilitaires de dates
     ├── useAgentChat.ts       # état de conversation partagé
+    ├── useEvents.ts          # événements affichés (serveur + cache + file)
+    ├── offline.ts            # cache local et file d'écritures hors ligne
+    ├── connectivity.ts       # état en ligne / hors ligne partagé
+    ├── colors.ts             # couleurs par catégorie (serveur ET navigateur)
     ├── useDictation.ts       # moteurs vocaux : Web Speech + repli Whisper
     ├── whisper.worker.ts     # inférence Whisper, hors thread principal
     ├── useDictationField.ts  # aperçu en direct dans un champ contrôlé
     └── types.ts
 ```
 
+## 📴 Comment marche le hors ligne
+
+Trois pièces, volontairement séparées :
+
+1. **`public/sw.js`** (service worker) — met en cache la coquille de l'app
+   (HTML des pages, JS/CSS de build, icônes, police) et la **dernière réponse**
+   de chaque lecture d'API. Stratégie : réseau d'abord, cache en secours ; une
+   réponse ressortie du cache est marquée d'un en-tête `x-agenda-cache: 1` pour
+   que la page sache qu'elle lit du périmé. Les appels aux agents
+   (`/api/agent`) et l'authentification ne sont jamais mis en cache : sans
+   réseau, ils doivent échouer franchement.
+2. **`src/lib/offline.ts`** — le cache d'événements (localStorage) et la **file
+   d'attente d'écritures**. Toute modification y entre d'abord (*write-behind*),
+   avec fusion des opérations redondantes : trois déplacements du même
+   événement = un seul `PUT`, une retouche d'un événement pas encore créé est
+   absorbée par sa création, une suppression annule les écritures en attente
+   qui la précèdent. La file est rejouée dans l'ordre et persistée après chaque
+   opération réussie : une coupure en plein milieu ne rejoue jamais deux fois
+   la même écriture. Une écriture refusée définitivement (400, ou 404 = plus
+   d'événement à modifier) est abandonnée et signalée ; un 5xx ou un 401
+   (session à rafraîchir) est retenté.
+3. **`src/lib/useEvents.ts`** — colle les deux : affiche l'instantané serveur
+   recouvert de la file d'attente, repousse la file au retour du réseau, au
+   retour de l'app au premier plan, et toutes les 15 s tant qu'il reste quelque
+   chose à envoyer.
+
+Ce qui **ne** marche pas hors ligne, et le dit : les agents et le Conseil
+(appels LLM côté serveur), la réponse aux invitations Google, et
+l'enregistrement des réglages.
+
+À noter : la synchro n'est pas faite dans le service worker (Background Sync)
+parce que cette API n'existe pas sur iOS — donc tout part de la page, qui
+retente dès qu'elle est visible.
+
 ## 🛠️ Personnalisation rapide
 
-- **Couleurs des catégories** : `CATEGORY_COLORS` dans `src/lib/agent.ts` et le
-  thème dans `tailwind.config.ts`.
+- **Couleurs des catégories** : `CATEGORY_COLORS` dans `src/lib/colors.ts`
+  (partagé par le stockage et l'agenda hors ligne ; `agent.ts` et `commit.ts`
+  gardent leur propre liste) et le thème dans `tailwind.config.ts`.
 - **Plage horaire affichée** : `DAY_START` / `DAY_END` dans
   `src/components/Calendar.tsx`.
 - **Comportement de l'assistant** : le *system prompt* dans `src/lib/agent.ts`.

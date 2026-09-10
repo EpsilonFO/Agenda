@@ -146,6 +146,11 @@ export default function ChatSheet({
               {micError}
             </p>
           )}
+          {chat.offline && (
+            <p className="mb-2 px-1 text-[11px] font-medium text-amber-300">
+              Hors ligne — les agents reviennent avec le réseau.
+            </p>
+          )}
           <div className="flex items-end gap-2">
             <MicButton
               onText={mic.onText}
@@ -163,12 +168,15 @@ export default function ChatSheet({
                 }
               }}
               rows={1}
-              placeholder="Écris ton message…"
-              className="field max-h-32 flex-1 resize-none overflow-y-auto"
+              disabled={chat.offline}
+              placeholder={
+                chat.offline ? "Agents indisponibles hors ligne" : "Écris ton message…"
+              }
+              className="field max-h-32 flex-1 resize-none overflow-y-auto disabled:opacity-60"
             />
             <button
               onClick={submit}
-              disabled={chat.loading || !mic.preview(chat.input).trim()}
+              disabled={chat.offline || chat.loading || !mic.preview(chat.input).trim()}
               className="btn-primary h-10 w-11 px-0 text-base"
               aria-label="Envoyer"
             >

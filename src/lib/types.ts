@@ -25,6 +25,12 @@ export type EventItem = {
   google?: GoogleOrigin;
   /** Préavis de rappel en minutes avant le début (ex: 60 = 1h avant). Si absent, utilise le défaut global REMINDER_LEAD_MIN. */
   reminderMin?: number;
+  /**
+   * Marqueur posé UNIQUEMENT côté navigateur : cet événement porte une
+   * modification faite hors ligne, pas encore poussée au serveur (voir
+   * lib/offline.ts). Jamais écrit dans data/events.json.
+   */
+  pendingSync?: boolean;
   createdAt: string;
   updatedAt: string;
 };
