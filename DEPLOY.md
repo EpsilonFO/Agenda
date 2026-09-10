@@ -72,7 +72,8 @@ Champs à contrôler dans `.env.local` :
 - `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — les clés VAPID (déjà générées).
 - `VAPID_SUBJECT` — `mailto:ton-email`.
 - `CRON_SECRET` — le secret généré ci-dessus.
-- (optionnel) `REMINDER_LEAD_MIN=30` — nombre de minutes de préavis avant un événement.
+- (optionnel) `REMINDER_LEAD_MIN=20,1` — les préavis, en minutes, avant un
+  événement (liste séparée par des virgules ; défaut : `20,1`).
 
 > Les clés VAPID incluses fonctionnent, mais comme la privée a transité par un dépôt,
 > tu peux en régénérer un couple pour toi seul : `npx web-push generate-vapid-keys`
@@ -143,8 +144,11 @@ Teste : ouvre `https://agenda.tondomaine.fr` dans un navigateur.
 
 Le serveur vérifie lui-même les événements à venir toutes les minutes
 (`src/instrumentation.ts`, démarré automatiquement par Next/PM2 — rien à
-configurer côté crontab). Le préavis par défaut est `REMINDER_LEAD_MIN`
-(20 min si non défini), overridable par événement via `reminderMin`.
+configurer côté crontab). Par défaut, chaque événement donne **deux** rappels :
+un préavis 20 min avant pour se préparer, puis un dernier appel 1 min avant.
+La liste se règle avec `REMINDER_LEAD_MIN` (par exemple `30,5,1` ; défaut
+`20,1`). Un événement peut avoir son propre préavis via `reminderMin` : il
+remplace celui de préparation, le dernier appel part quand même.
 
 Vérifie à la main que ça tourne bien après un déploiement :
 
@@ -170,8 +174,8 @@ curl -H "Authorization: Bearer TON_CRON_SECRET" https://agenda.tondomaine.fr/api
 4. Va dans **Réglages → Notifications → Activer les notifications**, autorise.
 5. Touche **Tester** : tu dois recevoir une notif.
 
-À partir de là, tu reçois un rappel ~20 min avant chaque événement de ton agenda
-(réglable via `REMINDER_LEAD_MIN` dans `.env.local`).
+À partir de là, tu reçois deux rappels par événement : ~20 min avant, puis
+~1 min avant (réglable via `REMINDER_LEAD_MIN` dans `.env.local`).
 
 ---
 

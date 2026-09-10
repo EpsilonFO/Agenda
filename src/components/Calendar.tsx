@@ -64,6 +64,16 @@ const ARMED_RESIZE_MIN_PX = 48;
  *  plusieurs lignes, aligné en haut à gauche, marges réduites au minimum. */
 const COMPACT_COL_PX = 130;
 
+/** ... mais seulement à partir de ce nombre de jours affichés. En vue 1 ou
+ *  3 jours, même sur le plus petit téléphone, une colonne fait une centaine de
+ *  pixels : le rendu large (titre centré sur deux lignes, coins arrondis,
+ *  police 12 px) y est plus beau, et c'est lui qu'on garde. */
+const COMPACT_MIN_DAYS = 4;
+
+/** Plancher de sécurité : sous cette largeur, plus rien ne se lit en rendu
+ *  large, quel que soit le nombre de jours affichés. */
+const COMPACT_FLOOR_PX = 64;
+
 /** Largeur de la colonne des heures selon le rendu. */
 const GUTTER_COMPACT_PX = 42;
 const GUTTER_WIDE_PX = 52;
@@ -256,7 +266,10 @@ export default function Calendar({
   // Décision prise sur une gouttière de référence : le rendu choisi ne doit pas
   // changer la largeur qui sert à le choisir (sinon la vue oscille).
   const refColWidth = gridW > 0 ? (gridW - GUTTER_WIDE_PX) / days.length : 0;
-  const compact = refColWidth > 0 && refColWidth < COMPACT_COL_PX;
+  const compact =
+    refColWidth > 0 &&
+    refColWidth <
+      (days.length >= COMPACT_MIN_DAYS ? COMPACT_COL_PX : COMPACT_FLOOR_PX);
   // En compact, la colonne des heures est rognée : chaque pixel rendu aux
   // colonnes de jours, c'est un caractère de plus par ligne de titre.
   const gutter = compact
