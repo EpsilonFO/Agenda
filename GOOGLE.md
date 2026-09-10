@@ -101,7 +101,7 @@ Dans `.env.local` (Mac **et** VPS) :
 ```bash
 GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
-# Facultatif : l'URI est déduite de WEBAUTHN_ORIGIN + /api/google/callback.
+# Facultatif : l'URI est déduite de APP_ORIGIN + /api/google/callback.
 # GOOGLE_REDIRECT_URI=https://agenda.monumia.fr/api/google/callback
 # Facultatifs (défauts) :
 # GOOGLE_TIMEZONE=Europe/Paris

@@ -28,12 +28,12 @@ export function googleConfigured(): boolean {
 /**
  * URI de redirection OAuth — doit être EXACTEMENT celle déclarée dans la
  * console Google Cloud. Priorité : GOOGLE_REDIRECT_URI, sinon
- * WEBAUTHN_ORIGIN + /api/google/callback, sinon l'origine de la requête.
+ * APP_ORIGIN + /api/google/callback, sinon l'origine de la requête.
  */
 export function googleRedirectUri(requestOrigin?: string): string {
   const explicit = process.env.GOOGLE_REDIRECT_URI;
   if (explicit) return explicit;
-  const origin = process.env.WEBAUTHN_ORIGIN || requestOrigin || "http://localhost:3002";
+  const origin = process.env.APP_ORIGIN || process.env.WEBAUTHN_ORIGIN || requestOrigin || "http://localhost:3002";
   return origin.replace(/\/+$/, "") + CALLBACK_PATH;
 }
 

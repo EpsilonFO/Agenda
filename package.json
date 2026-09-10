@@ -2,7 +2,7 @@
   "name": "agenda-ia",
   "version": "0.1.0",
   "private": true,
-  "description": "Agenda personnel moderne piloté par un agent IA (modèle au choix via providall : LLM_MODEL)",
+  "description": "Agenda personnel moderne pilot\u00e9 par un agent IA (mod\u00e8le au choix via providall : LLM_MODEL)",
   "scripts": {
     "clean": "rm -rf .next",
     "predev": "rm -rf .next",
@@ -12,11 +12,9 @@
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "reset": "node -e \"const fs=require('fs');const events=JSON.parse(fs.readFileSync('data/events.json','utf8'));const kept=events.filter(e=>e.source!=='plan');fs.writeFileSync('data/events.json',JSON.stringify(kept,null,2));fs.writeFileSync('data/plans.json','[]');console.log('events :',events.length,'→',kept.length,'| plans vidés');\""
+    "reset": "node -e \"const fs=require('fs');const events=JSON.parse(fs.readFileSync('data/events.json','utf8'));const kept=events.filter(e=>e.source!=='plan');fs.writeFileSync('data/events.json',JSON.stringify(kept,null,2));fs.writeFileSync('data/plans.json','[]');console.log('events :',events.length,'\u2192',kept.length,'| plans vid\u00e9s');\""
   },
   "dependencies": {
-    "@simplewebauthn/browser": "^13.3.0",
-    "@simplewebauthn/server": "^13.3.2",
     "@xenova/transformers": "^2.17.2",
     "next": "14.2.5",
     "providall": "github:EpsilonFO/providall#v0.2.0",

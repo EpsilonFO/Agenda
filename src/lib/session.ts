@@ -1,20 +1,57 @@
 /**
  * Cookie de session signé (HMAC-SHA256), 100% Web Crypto pour fonctionner
  * aussi bien dans le middleware (runtime edge) que dans les routes API (node).
- * N'importe AUCUN module Node ici.
+ * N'importe AUCUN module Node ici — c'est aussi pourquoi les réglages communs
+ * (origine, durée, secret) vivent dans ce fichier plutôt que dans auth.ts.
  */
 
 export const SESSION_COOKIE = "agenda_session";
-export const CHALLENGE_COOKIE = "agenda_challenge";
 
 /**
- * true = auth passkey désactivée (développement local uniquement).
+ * true = auth désactivée (développement local uniquement).
  * Activé par AUTH_DISABLED=true dans .env.local — jamais en prod.
- * Vit ici (et pas dans auth.ts) car le middleware edge ne peut pas importer
- * les modules Node (fs/path) dont auth.ts dépend.
  */
 export function authDisabled(): boolean {
   return process.env.AUTH_DISABLED === "true";
+}
+
+/** Origine publique de l'app (sert aussi de base à l'OAuth Google). */
+export function appOrigin(): string {
+  return (
+    process.env.APP_ORIGIN ||
+    process.env.WEBAUTHN_ORIGIN || // ancien nom, gardé pour ne rien casser
+    "http://localhost:3002"
+  );
+}
+
+export function sessionSecret(): string {
+  return process.env.SESSION_SECRET || "";
+}
+
+/**
+ * Durée de vie du cookie. Volontairement longue (1 an par défaut) : la session
+ * est de toute façon reconduite à chaque visite (voir `shouldRefresh`), donc en
+ * pratique on ne retape le mot de passe que si on ne vient pas de tout un an.
+ */
+export function sessionDays(): number {
+  const n = Number(process.env.SESSION_DAYS);
+  return Number.isFinite(n) && n > 0 ? n : 365;
+}
+
+/** Cookies sécurisés dès que l'origin est en https (donc pas en local http). */
+export function cookieSecure(): boolean {
+  return appOrigin().startsWith("https://");
+}
+
+/** Options communes du cookie de session (même valeur à l'écriture partout). */
+export function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: cookieSecure(),
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: sessionDays() * 24 * 60 * 60,
+  };
 }
 
 type Payload = { sub: string; exp: number };
@@ -51,7 +88,7 @@ async function hmac(body: string, secret: string): Promise<string> {
 }
 
 /** Comparaison à temps constant (évite les attaques temporelles). */
-function safeEqual(a: string, b: string): boolean {
+export function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -94,4 +131,14 @@ export async function verifySession(
   } catch {
     return null;
   }
+}
+
+/**
+ * Session glissante : au-delà de la moitié de sa vie, on réémet le jeton pour
+ * repartir d'une durée pleine. Tant qu'on ouvre l'agenda de temps en temps, la
+ * session ne s'éteint jamais — c'est ça qui évite de retaper le mot de passe.
+ */
+export function shouldRefresh(payload: Payload, days: number): boolean {
+  const remaining = payload.exp - Math.floor(Date.now() / 1000);
+  return remaining < (days * 24 * 60 * 60) / 2;
 }

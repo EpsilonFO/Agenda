@@ -1,83 +1,120 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { isoBase64URL } from "@simplewebauthn/server/helpers";
-import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
 
 /**
- * Authentification par passkey (WebAuthn). Stockage des identifiants (clé
- * publique + compteur) dans data/credentials.json, dans le même esprit
- * fichier-JSON que le reste du projet (store.ts).
+ * Authentification par mot de passe (application mono-utilisateur).
+ *
+ * Le mot de passe n'est jamais stocké en clair : on garde un dérivé PBKDF2-
+ * SHA256 (sel aléatoire) dans data/password.json, dans le même esprit fichier-
+ * JSON que le reste du projet (store.ts). Pas de dépendance native : tout passe
+ * par Web Crypto, comme session.ts.
  */
 
 const DATA_DIR = path.join(process.cwd(), "data");
-const CRED_FILE = path.join(DATA_DIR, "credentials.json");
+const PASSWORD_FILE = path.join(DATA_DIR, "password.json");
 
-/** Identité (application mono-utilisateur). */
-export const RP_NAME = "Agenda IA";
-export const RP_ID = process.env.WEBAUTHN_RP_ID || "localhost";
-export const ORIGIN = process.env.WEBAUTHN_ORIGIN || "http://localhost:3111";
+/** Sujet de la session (mono-utilisateur). */
 export const USER_NAME = "felix";
-/** Handle utilisateur stable (mono-utilisateur). */
-export const USER_ID = new TextEncoder().encode("agenda-felix");
 
-export function sessionSecret(): string {
-  return process.env.SESSION_SECRET || "";
-}
-export function sessionDays(): number {
-  return Number(process.env.SESSION_DAYS || 30);
-}
-/** Cookies sécurisés dès que l'origin est en https (donc pas en local http). */
-export function cookieSecure(): boolean {
-  return ORIGIN.startsWith("https://");
-}
+/** Coût du dérivé. ~200k itérations : quelques dizaines de ms, imperceptible. */
+const ITERATIONS = 210_000;
+const KEY_BITS = 256;
 
-export type StoredCredential = {
-  /** ID du credential, base64url. */
-  id: string;
-  /** Clé publique COSE, base64url. */
-  publicKey: string;
-  counter: number;
-  transports?: AuthenticatorTransportFuture[];
-  label?: string;
-  createdAt: string;
+type PasswordRecord = {
+  algo: "pbkdf2-sha256";
+  iterations: number;
+  /** Sel aléatoire, base64url. */
+  salt: string;
+  /** Dérivé du mot de passe, base64url. */
+  hash: string;
+  updatedAt: string;
 };
 
-export async function listCredentials(): Promise<StoredCredential[]> {
+const enc = new TextEncoder();
+
+function b64url(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromB64url(s: string): Uint8Array {
+  let t = s.replace(/-/g, "+").replace(/_/g, "/");
+  t += "=".repeat(t.length % 4 ? 4 - (t.length % 4) : 0);
+  const bin = atob(t);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function derive(
+  password: string,
+  salt: Uint8Array,
+  iterations: number
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations },
+    key,
+    KEY_BITS
+  );
+  return b64url(new Uint8Array(bits));
+}
+
+async function readRecord(): Promise<PasswordRecord | null> {
   try {
-    const raw = await fs.readFile(CRED_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const raw = await fs.readFile(PASSWORD_FILE, "utf8");
+    const parsed = JSON.parse(raw) as PasswordRecord;
+    return parsed && parsed.hash && parsed.salt ? parsed : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
-async function writeCredentials(creds: StoredCredential[]): Promise<void> {
+/** true si un mot de passe a déjà été défini (sinon : première configuration). */
+export async function passwordConfigured(): Promise<boolean> {
+  return (await readRecord()) !== null;
+}
+
+/** Longueur minimale exigée à la création / au changement. */
+export const MIN_PASSWORD_LENGTH = 8;
+
+/** Définit (ou remplace) le mot de passe. */
+export async function setPassword(password: string): Promise<void> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const record: PasswordRecord = {
+    algo: "pbkdf2-sha256",
+    iterations: ITERATIONS,
+    salt: b64url(salt),
+    hash: await derive(password, salt, ITERATIONS),
+    updatedAt: new Date().toISOString(),
+  };
   await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(CRED_FILE, JSON.stringify(creds, null, 2), "utf8");
+  await fs.writeFile(PASSWORD_FILE, JSON.stringify(record, null, 2), "utf8");
 }
 
-/** Ajoute (ou remplace) un credential, dédupliqué par id. */
-export async function saveCredential(cred: StoredCredential): Promise<void> {
-  const creds = await listCredentials();
-  const next = creds.filter((c) => c.id !== cred.id);
-  next.push(cred);
-  await writeCredentials(next);
+/** Comparaison à temps constant des dérivés. */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
-/** Met à jour le compteur anti-rejeu d'un credential. */
-export async function updateCounter(id: string, counter: number): Promise<void> {
-  const creds = await listCredentials();
-  const idx = creds.findIndex((c) => c.id === id);
-  if (idx === -1) return;
-  creds[idx].counter = counter;
-  await writeCredentials(creds);
-}
-
-/* Encodage/décodage de la clé publique (Uint8Array <-> base64url). */
-export function encodePublicKey(bytes: Uint8Array): string {
-  return isoBase64URL.fromBuffer(bytes);
-}
-export function decodePublicKey(b64: string): Uint8Array {
-  return isoBase64URL.toBuffer(b64);
+/** Vérifie un mot de passe proposé. false si aucun n'est configuré. */
+export async function verifyPassword(password: string): Promise<boolean> {
+  const record = await readRecord();
+  if (!record) return false;
+  const candidate = await derive(
+    password,
+    fromB64url(record.salt),
+    record.iterations || ITERATIONS
+  );
+  return safeEqual(candidate, record.hash);
 }
