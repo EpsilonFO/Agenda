@@ -124,7 +124,7 @@ const tools: ToolDef[] = [
           reminderMin: {
             type: "number",
             description:
-              "Préavis de rappel en minutes avant le début (ex: 60 = 1h avant, 15 = 15 min avant). Si absent, utilise le défaut global (30 min).",
+              "Préavis de rappel en minutes avant le début (ex: 60 = 1h avant, 15 = 15 min avant). Si absent, utilise les rappels par défaut : 20 min avant, puis 1 min avant. Le rappel d'une minute avant part de toute façon.",
           },
           attendees: {
             type: "array",
@@ -187,7 +187,7 @@ const tools: ToolDef[] = [
           reminderMin: {
             type: "number",
             description:
-              "Préavis de rappel en minutes avant le début. Passer 0 pour supprimer un rappel personnalisé et revenir au défaut.",
+              "Préavis de rappel en minutes avant le début. Passer 0 pour supprimer un rappel personnalisé et revenir au défaut (20 min avant). Le rappel d'une minute avant part de toute façon.",
           },
           attendees: {
             type: "array",
@@ -213,7 +213,7 @@ const tools: ToolDef[] = [
           reminderMin: {
             type: "number",
             description:
-              "Préavis en minutes (ex: 60 = 1h avant, 30 = 30 min avant). Passer 0 pour supprimer le rappel personnalisé et revenir au défaut global.",
+              "Préavis en minutes (ex: 60 = 1h avant, 30 = 30 min avant). Passer 0 pour supprimer le rappel personnalisé et revenir au défaut global (20 min avant). Le rappel d'une minute avant le début part de toute façon, il ne se règle pas ici.",
           },
         },
         required: ["id", "reminderMin"],

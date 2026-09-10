@@ -23,7 +23,7 @@ export type EventItem = {
   invite?: InviteInfo;
   /** Lien vers l'événement Google d'origine (uniquement si source = "google"). */
   google?: GoogleOrigin;
-  /** Préavis de rappel en minutes avant le début (ex: 60 = 1h avant). Si absent, utilise le défaut global REMINDER_LEAD_MIN. */
+  /** Préavis de rappel en minutes avant le début (ex: 60 = 1h avant). Si absent, utilise le défaut global REMINDER_LEAD_MIN. Remplace le préavis de préparation ; le rappel de dernière minute part quand même. */
   reminderMin?: number;
   /**
    * Marqueur posé UNIQUEMENT côté navigateur : cet événement porte une
