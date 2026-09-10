@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { CalendarIcon } from "@/components/icons";
+import { useOnline } from "@/lib/connectivity";
 import LifeConfigEditor from "@/components/LifeConfigEditor";
 import GoogleCalendarSettings from "@/components/GoogleCalendarSettings";
 import NotificationSettings from "@/components/NotificationSettings";
@@ -14,6 +15,10 @@ import MobileTabBar from "@/components/MobileTabBar";
  * Plus, en dessous : la connexion Google Calendar et les notifications.
  */
 export default function ReglagesPage() {
+  // Les réglages s'écrivent directement côté serveur (revalidation zod) :
+  // contrairement à l'agenda, ils n'ont pas de file d'attente hors ligne.
+  const online = useOnline();
+
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 p-4 pb-[8.5rem] sm:p-6 lg:pb-6">
       <header className="glass mt-[env(safe-area-inset-top)] flex items-center justify-between rounded-3xl px-4 py-3">
@@ -28,6 +33,14 @@ export default function ReglagesPage() {
           <span>Agenda</span>
         </Link>
       </header>
+
+      {!online && (
+        <p className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-xs leading-snug text-amber-200">
+          Hors ligne : les réglages s&apos;affichent tels qu&apos;au dernier
+          chargement, mais l&apos;enregistrement attend le réseau. L&apos;agenda,
+          lui, reste modifiable.
+        </p>
+      )}
 
       <LifeConfigEditor />
 

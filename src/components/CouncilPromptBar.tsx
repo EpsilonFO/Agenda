@@ -123,12 +123,17 @@ export default function CouncilPromptBar({ chat, open, onClose }: Props) {
               }
             }}
             rows={2}
-            placeholder="Ex : 10h Delos, TP jeudi, salle 3×, soirée Marine samedi…"
+            disabled={chat.offline}
+            placeholder={
+              chat.offline
+                ? "Le Conseil a besoin d'une connexion…"
+                : "Ex : 10h Delos, TP jeudi, salle 3×, soirée Marine samedi…"
+            }
             className="max-h-56 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-2 text-lg text-ink outline-none placeholder:text-ink-faint"
           />
           <button
             onClick={submit}
-            disabled={chat.loading || !mic.preview(chat.input).trim()}
+            disabled={chat.offline || chat.loading || !mic.preview(chat.input).trim()}
             className="btn-primary h-12 w-12 shrink-0 rounded-2xl px-0 text-xl"
             aria-label="Lancer le conseil"
           >
@@ -137,7 +142,9 @@ export default function CouncilPromptBar({ chat, open, onClose }: Props) {
         </div>
 
         <p className="mt-5 text-center text-[11px] text-ink-faint">
-          Entrée pour lancer · Échap pour fermer
+          {chat.offline
+            ? "Hors ligne — le Conseil planifie côté serveur, il faut du réseau."
+            : "Entrée pour lancer · Échap pour fermer"}
         </p>
       </div>
     </div>

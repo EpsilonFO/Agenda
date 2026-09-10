@@ -4,6 +4,7 @@ import { Dispatch, SetStateAction, useCallback, useEffect, useState } from "reac
 import type { WeekPlan, ChatHistoryEntry, Session } from "@/lib/types";
 import { toLocalIso } from "@/lib/dates";
 import { AGENT_ORDER, type ChatMode } from "@/lib/agents";
+import { isOnline, noteNetworkFail, noteNetworkOk, useOnline } from "@/lib/connectivity";
 
 export type ChatMsg = {
   role: "user" | "assistant";
@@ -19,6 +20,15 @@ export type ChatMsg = {
  */
 class AgentFetchError extends Error {}
 
+/**
+ * Les agents tournent sur le serveur (appels LLM) : sans réseau, il n'y a rien
+ * à tenter. On le dit clairement plutôt que de laisser une requête mourir.
+ */
+const OFFLINE_REPLY =
+  "Pas de connexion — les agents ont besoin d'internet pour réfléchir. " +
+  "Ton agenda reste consultable et modifiable : tes ajouts et déplacements " +
+  "partiront tout seuls au retour du réseau.";
+
 /** Une conversation neuve d\u00e9marre vide : aucun message d'accueil automatique. */
 function initialConvos(): Record<ChatMode, ChatMsg[]> {
   const modes: ChatMode[] = ["council", ...AGENT_ORDER];
@@ -29,6 +39,8 @@ function initialConvos(): Record<ChatMode, ChatMsg[]> {
 
 export type AgentChat = {
   mode: ChatMode;
+  /** true = pas de réseau : les agents sont indisponibles (agenda, lui, OK). */
+  offline: boolean;
   setMode: (m: ChatMode) => void;
   startCouncil: () => void;
   messages: ChatMsg[];
@@ -45,6 +57,7 @@ export type AgentChat = {
 };
 
 export function useAgentChat(onChanged: () => void): AgentChat {
+  const online = useOnline();
   const [convos, setConvos] = useState<Record<ChatMode, ChatMsg[]>>(initialConvos);
   const [mode, setMode] = useState<ChatMode>("josiane");
   const [input, setInput] = useState("");
@@ -137,6 +150,21 @@ export function useAgentChat(onChanged: () => void): AgentChat {
       setInput("");
 
       const activeMode = mode;
+
+      // Hors ligne : on répond nous-mêmes, sans toucher au réseau ni créer de
+      // session côté serveur.
+      if (!isOnline()) {
+        setConvos((prev) => ({
+          ...prev,
+          [activeMode]: [
+            ...prev[activeMode],
+            { role: "user" as const, content },
+            { role: "assistant" as const, content: OFFLINE_REPLY },
+          ],
+        }));
+        return;
+      }
+
       const sessionId = sessionIds[activeMode];
       const isFirstUserMsg = convos[activeMode].filter((m) => m.role === "user").length === 0;
 
@@ -223,6 +251,7 @@ export function useAgentChat(onChanged: () => void): AgentChat {
           );
         }
         const data = await res.json();
+        noteNetworkOk();
         setConvos((prev) => ({
           ...prev,
           [activeMode]: [
@@ -238,10 +267,16 @@ export function useAgentChat(onChanged: () => void): AgentChat {
         }));
         if (data.changed) onChanged();
       } catch (err) {
-        const content =
-          err instanceof AgentFetchError
-            ? err.message
-            : "\u274c Impossible de contacter l'agent.";
+        let content: string;
+        if (err instanceof AgentFetchError) {
+          content = err.message;
+        } else if (err instanceof TypeError) {
+          // fetch rejeté : la connexion est tombée en cours de route.
+          noteNetworkFail();
+          content = OFFLINE_REPLY;
+        } else {
+          content = "\u274c Impossible de contacter l'agent.";
+        }
         setConvos((prev) => ({
           ...prev,
           [activeMode]: [...prev[activeMode], { role: "assistant", content }],
@@ -258,6 +293,16 @@ export function useAgentChat(onChanged: () => void): AgentChat {
       const activeMode = mode;
       const msg = convos[activeMode][index];
       if (!msg?.plan || msg.planCommitted || loading) return;
+      if (!isOnline()) {
+        setConvos((prev) => ({
+          ...prev,
+          [activeMode]: [
+            ...prev[activeMode],
+            { role: "assistant", content: OFFLINE_REPLY },
+          ],
+        }));
+        return;
+      }
       setLoading(true);
       try {
         const res = await fetch("/api/plan/commit", {
@@ -298,6 +343,7 @@ export function useAgentChat(onChanged: () => void): AgentChat {
 
   return {
     mode,
+    offline: !online,
     setMode,
     startCouncil,
     messages: convos[mode],

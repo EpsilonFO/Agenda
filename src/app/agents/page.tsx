@@ -37,6 +37,13 @@ export default function AgentsPage() {
         </div>
       </header>
 
+      {chat.offline && (
+        <p className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-xs leading-snug text-amber-200">
+          Hors ligne : les agents tournent côté serveur, ils reviendront avec le
+          réseau. L&apos;agenda, lui, reste consultable et modifiable.
+        </p>
+      )}
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {AGENTS.map((name) => {
           const a = AGENT_META[name];

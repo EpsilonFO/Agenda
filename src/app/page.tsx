@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Calendar from "@/components/Calendar";
 import EventModal from "@/components/EventModal";
@@ -9,6 +9,7 @@ import MobileAgentBar from "@/components/MobileAgentBar";
 import MobileTabBar from "@/components/MobileTabBar";
 import CouncilPromptBar from "@/components/CouncilPromptBar";
 import SegmentedControl from "@/components/SegmentedControl";
+import SyncStatus from "@/components/SyncStatus";
 import { CalendarIcon, SettingsIcon } from "@/components/icons";
 import { EventItem } from "@/lib/types";
 import {
@@ -20,6 +21,8 @@ import {
   toLocalIso,
 } from "@/lib/dates";
 import { useAgentChat } from "@/lib/useAgentChat";
+import { useEvents } from "@/lib/useEvents";
+import type { EventPayload } from "@/lib/offline";
 
 const VIEW_OPTIONS = [
   { value: 1, label: "1J" },
@@ -32,21 +35,16 @@ export default function Home() {
   // puis pilotable par le sélecteur segmenté.
   const [viewDays, setViewDays] = useState(7);
   const [anchor, setAnchor] = useState<Date>(() => startOfWeek(new Date()));
-  const [events, setEvents] = useState<EventItem[]>([]);
   const [modalEvent, setModalEvent] = useState<Partial<EventItem> | null>(null);
   const [councilOpen, setCouncilOpen] = useState(false);
   const pickedRef = useRef(false);
 
-  const loadEvents = useCallback(async () => {
-    const res = await fetch("/api/events");
-    setEvents(await res.json());
-  }, []);
+  // Agenda : serveur quand il répond, cache du téléphone sinon, plus les
+  // modifications faites hors ligne qui attendent de partir (lib/useEvents).
+  const store = useEvents();
+  const { events } = store;
 
-  const chat = useAgentChat(loadEvents);
-
-  useEffect(() => {
-    loadEvents();
-  }, [loadEvents]);
+  const chat = useAgentChat(store.reload);
 
   // Défaut mobile : 3 jours centrés sur aujourd'hui.
   useEffect(() => {
@@ -71,25 +69,6 @@ export default function Home() {
 
   function goToday() {
     setAnchor(anchorFor(viewDays, new Date()));
-  }
-
-  // Déplacement / redimensionnement d'un événement (drag & drop) :
-  // mise à jour optimiste, puis persistance via l'API.
-  function moveEvent(id: string, start: Date, end: Date) {
-    const startIso = toLocalIso(start);
-    const endIso = toLocalIso(end);
-    setEvents((evs) =>
-      evs.map((ev) =>
-        ev.id === id ? { ...ev, start: startIso, end: endIso } : ev
-      )
-    );
-    fetch(`/api/events/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ start: startIso, end: endIso }),
-    }).then((res) => {
-      if (!res.ok) loadEvents(); // rollback en cas d'échec
-    });
   }
 
   // Stats d'heures pour la semaine visible
@@ -161,6 +140,8 @@ export default function Home() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <SyncStatus state={store} />
+
           <SegmentedControl
             options={VIEW_OPTIONS}
             value={viewDays}
@@ -266,7 +247,7 @@ export default function Home() {
                 end: toLocalIso(end),
               });
             }}
-            onEventMove={moveEvent}
+            onEventMove={store.moveEvent}
           />
         </div>
 
@@ -312,10 +293,19 @@ export default function Home() {
       {modalEvent && (
         <EventModal
           event={modalEvent}
+          online={store.online}
           onClose={() => setModalEvent(null)}
-          onSaved={() => {
+          onSave={(payload: EventPayload) => {
+            store.saveEvent(payload, modalEvent.id);
             setModalEvent(null);
-            loadEvents();
+          }}
+          onDelete={() => {
+            if (modalEvent.id) store.removeEvent(modalEvent.id);
+            setModalEvent(null);
+          }}
+          onRsvped={() => {
+            setModalEvent(null);
+            void store.reload();
           }}
         />
       )}
